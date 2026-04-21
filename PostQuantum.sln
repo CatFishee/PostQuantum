@@ -1,0 +1,29 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36705.20 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "PublicAdminWeb", "PublicAdminWeb\PublicAdminWeb.pyproj", "{341E8AB8-2C39-499E-AF04-6ED48564E638}"
+EndProject
+Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "CA Server", "CA Server\CA Server.pyproj", "{F25919E6-5DFD-446B-935A-E6EDD2E297CA}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{341E8AB8-2C39-499E-AF04-6ED48564E638}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{341E8AB8-2C39-499E-AF04-6ED48564E638}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{341E8AB8-2C39-499E-AF04-6ED48564E638}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{341E8AB8-2C39-499E-AF04-6ED48564E638}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F25919E6-5DFD-446B-935A-E6EDD2E297CA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F25919E6-5DFD-446B-935A-E6EDD2E297CA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {A419F906-F513-4E64-AA7F-528A4194D27C}
+	EndGlobalSection
+EndGlobal
