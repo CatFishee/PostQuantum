@@ -1,24 +1,26 @@
-#!/usr/bin/env python
-"""
-Command-line utility for administrative tasks.
-
-# For more information about this file, visit
-# https://docs.djangoproject.com/en/2.1/ref/django-admin/
-"""
-
+﻿#!/usr/bin/env python
 import os
 import sys
 
-if __name__ == '__main__':
-    os.environ.setdefault(
-        'DJANGO_SETTINGS_MODULE',
-        'PublicAdminWeb.settings')
+def main():
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'PublicAdminWeb.settings')
+    
+    # --- PHẦN LOAD DLL CHO PQC ---
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        # Ép Python nhận liboqs.dll ngay tại thư mục manage.py
+        os.add_dll_directory(current_dir)
+        print(f"[*] PQC DLL loaded from: {current_dir}")
+    except Exception as e:
+        print(f"[!] Warning: Could not set DLL directory: {e}")
+
     try:
         from django.core.management import execute_from_command_line
     except ImportError as exc:
         raise ImportError(
-            "Couldn't import Django. Are you sure it's installed and "
-            "available on your PYTHONPATH environment variable? Did you "
-            "forget to activate a virtual environment?"
+            "Couldn't import Django. Are you sure it's installed..."
         ) from exc
     execute_from_command_line(sys.argv)
+
+if __name__ == '__main__':
+    main()
