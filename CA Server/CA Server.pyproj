@@ -11,6 +11,7 @@
     <OutputPath>.</OutputPath>
     <Name>CA Server</Name>
     <RootNamespace>CA Server</RootNamespace>
+    <SuppressEnvironmentCreationPrompt>True</SuppressEnvironmentCreationPrompt>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -22,7 +23,11 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="CA_Server.py" />
+    <Compile Include="crypto_utils.py" />
     <Compile Include="main.py">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="db_connection.py">
       <SubType>Code</SubType>
     </Compile>
   </ItemGroup>

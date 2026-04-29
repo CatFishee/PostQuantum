@@ -1,30 +1,22 @@
-"""
-Definition of urls for PublicAdminWeb.
-"""
-
-from datetime import datetime
+﻿from datetime import datetime
 from django.urls import path
 from django.contrib import admin
-from django.contrib.auth.views import LoginView, LogoutView
-from app import forms, views
-
+from django.contrib.auth.views import LogoutView
+from app import views # Import views từ app
 
 urlpatterns = [
+    # Các trang cơ bản
     path('', views.home, name='home'),
-    path('contact/', views.contact, name='contact'),
-    path('about/', views.about, name='about'),
-    path('login/',
-         LoginView.as_view
-         (
-             template_name='app/login.html',
-             authentication_form=forms.BootstrapAuthenticationForm,
-             extra_context=
-             {
-                 'title': 'Log in',
-                 'year' : datetime.now().year,
-             }
-         ),
-         name='login'),
+    
+    # Các trang chức năng PQC mới
+    path('register/', views.register, name='register'),
+    path('login/', views.login, name='login'),
+    path('dashboard/', views.dashboard, name='dashboard'),
+    path('sign/<str:doc_id>/', views.sign_document_view, name='sign_document'),
+    
+    # Đăng xuất
     path('logout/', LogoutView.as_view(next_page='/'), name='logout'),
+    
+    # Trang admin mặc định của Django
     path('admin/', admin.site.urls),
 ]

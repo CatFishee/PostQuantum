@@ -5,6 +5,7 @@
     <Name>PublicAdminWeb</Name>
     <RootNamespace>PublicAdminWeb</RootNamespace>
     <TestFramework>Pytest</TestFramework>
+    <SuppressEnvironmentCreationPrompt>True</SuppressEnvironmentCreationPrompt>
   </PropertyGroup>
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
@@ -37,8 +38,9 @@
     <Compile Include="app\views.py" />
     <Compile Include="app\__init__.py" />
     <Compile Include="app\migrations\__init__.py" />
+    <Compile Include="app\db_connection.py" />
     <Compile Include="manage.py" />
-    <Compile Include="crypto_utils.py">
+    <Compile Include="app\crypto_utils.py">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="PublicAdminWeb\__init__.py" />
