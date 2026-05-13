@@ -1,17 +1,18 @@
-﻿# db_connection.py
+﻿import urllib.parse
 from pymongo import MongoClient
-import urllib.parse
 
-# 1. Thông tin kết nối
-password = urllib.parse.quote_plus("PostQuantumPassword") # Bảo mật mật khẩu nếu có ký tự đặc biệt
-uri = f"mongodb+srv://Default:{password}@postquantum.fu2sbf1.mongodb.net/?retryWrites=true&w=majority"
+# URI mới bạn vừa cung cấp
+password = urllib.parse.quote_plus("PostQuantumPassword")
+uri = f"mongodb+srv://Default:{password}@postquantum.qd987xk.mongodb.net/?retryWrites=true&w=majority&appName=postquantum"
 
 def get_db():
     try:
-        client = MongoClient(uri)
-        # Tên Database chúng ta sẽ dùng
-        db = client['PQC_Admin_System']
-        return db
+        # Thêm timeout 5 giây để không bị "xoay hoài" nếu lỗi
+        client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+        # Kiểm tra kết nối thực tế
+        client.admin.command('ping')
+        print("[+] Kết nối MongoDB Atlas (Cluster mới) thành công!")
+        return client['PQC_Admin_System']
     except Exception as e:
-        print(f"Lỗi kết nối MongoDB: {e}")
+        print(f"[-] Lỗi kết nối MongoDB: {e}")
         return None
