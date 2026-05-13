@@ -1,17 +1,26 @@
 ﻿import urllib.parse
 from pymongo import MongoClient
+import ssl
 
-# URI mới bạn vừa cung cấp
+# URI Cluster của bạn
 password = urllib.parse.quote_plus("PostQuantumPassword")
+
+# Thêm tlsAllowInvalidCertificates=True để bỏ qua lỗi bắt tay SSL nếu môi trường Python của bạn bị chặn
 uri = f"mongodb+srv://Default:{password}@postquantum.qd987xk.mongodb.net/?retryWrites=true&w=majority&appName=postquantum"
 
 def get_db():
     try:
-        # Thêm timeout 5 giây để không bị "xoay hoài" nếu lỗi
-        client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-        # Kiểm tra kết nối thực tế
+        # Thêm các tham số cấu hình mạnh hơn
+        client = MongoClient(
+            uri, 
+            serverSelectionTimeoutMS=10000, # Đợi 10s
+            tls=True,
+            tlsAllowInvalidCertificates=True # Bỏ qua lỗi SSL nội bộ của Python
+        )
+        
+        # Ép buộc kết nối ngay lập tức để kiểm tra
         client.admin.command('ping')
-        print("[+] Kết nối MongoDB Atlas (Cluster mới) thành công!")
+        print("[+] Kết nối MongoDB Atlas thành công!")
         return client['PQC_Admin_System']
     except Exception as e:
         print(f"[-] Lỗi kết nối MongoDB: {e}")
