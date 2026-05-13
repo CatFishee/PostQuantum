@@ -34,7 +34,6 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="oqs.dll" />
-    <Content Include="requirements.txt" />
   </ItemGroup>
   <ItemGroup>
     <InterpreterReference Include="Global|VisualStudio|venv (Python 3.14 (64-bit))" />
