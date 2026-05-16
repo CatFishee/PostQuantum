@@ -10,8 +10,6 @@ liboqs-python==0.14.1
 # Xử lý PDF và Metadata
 pikepdf>=9.0.0
 lxml>=5.2.0
-# Xử lý hashing hậu lượng tử
-argon2-cffi>=23.1.0
 # Thêm Pillow trực tiếp để tránh lỗi dependency của pikepdf
 Pillow>=10.0.0
 
@@ -31,7 +29,6 @@ typing_extensions
 anyio
 asgiref
 tzdata
-
 
 # --- Testing ---
 pytest>=8.0.0

@@ -1,16 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 18
-VisualStudioVersion = 18.5.11619.145 insiders
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36705.20 d17.14
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "PublicAdminWeb", "PublicAdminWeb\PublicAdminWeb.pyproj", "{341E8AB8-2C39-499E-AF04-6ED48564E638}"
 EndProject
 Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "CA Server", "CA Server\CA Server.pyproj", "{F25919E6-5DFD-446B-935A-E6EDD2E297CA}"
-EndProject
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{25E60EF1-9EFB-4C6E-8756-070922ACA8E8}"
-	ProjectSection(SolutionItems) = preProject
-		requirements.txt = requirements.txt
-	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
