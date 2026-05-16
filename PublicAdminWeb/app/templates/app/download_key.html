@@ -1,0 +1,15 @@
+{% extends "app/layout.html" %}
+
+{% block content %}
+<h2>Tải private key</h2>
+
+{% if private_key %}
+<div class="alert alert-success">Tài khoản cán bộ {{ username }} đã được tạo.</div>
+<textarea class="form-control" rows="10" readonly>{{ private_key }}</textarea>
+<p style="margin-top: 15px;">
+    <a href="{% url 'login' %}" class="btn btn-primary">Đăng nhập</a>
+</p>
+{% else %}
+<div class="alert alert-warning">CA Server chưa trả private key.</div>
+{% endif %}
+{% endblock %}
