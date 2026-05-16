@@ -1,0 +1,52 @@
+{% extends "app/layout.html" %}
+
+{% block content %}
+<h2>{{ title }}</h2>
+
+{% if messages %}
+<div class="messages">
+    {% for message in messages %}
+    <div class="alert alert-{{ message.tags|default:'info' }}">{{ message }}</div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if request.session.role|lower == "officer" %}
+<p>
+    <a class="btn btn-primary" href="{% url 'sign_document_manual' %}">Ký PDF thủ công</a>
+</p>
+{% endif %}
+
+<table class="table table-striped table-bordered">
+    <thead>
+        <tr>
+            <th>Mã hồ sơ</th>
+            <th>Người dân</th>
+            <th>Cán bộ</th>
+            <th>Trạng thái</th>
+            <th>Thao tác</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for doc in docs %}
+        <tr>
+            <td>{{ doc.id }}</td>
+            <td>{{ doc.citizen_id }}</td>
+            <td>{{ doc.assigned_officer_id }}</td>
+            <td>{{ doc.status }}</td>
+            <td>
+                {% if request.session.role|lower == "officer" %}
+                <a class="btn btn-xs btn-primary" href="{% url 'sign_document' doc.id %}">Ký</a>
+                {% else %}
+                <span class="text-muted">-</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% empty %}
+        <tr>
+            <td colspan="5" class="text-center text-muted">Chưa có hồ sơ.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

@@ -13,12 +13,27 @@
 
 <div class="row">
     <div class="col-md-7">
-        <form action="{% url 'login' %}" method="post" class="form-horizontal">
+        <form action="{% url 'register' %}" method="post" class="form-horizontal">
             {% csrf_token %}
             <div class="form-group">
                 <label for="id_username" class="col-md-3 control-label">Tên đăng nhập</label>
                 <div class="col-md-8">
                     <input id="id_username" name="username" type="text" class="form-control" required>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="id_full_name" class="col-md-3 control-label">Họ tên</label>
+                <div class="col-md-8">
+                    <input id="id_full_name" name="full_name" type="text" class="form-control" required>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="id_role" class="col-md-3 control-label">Vai trò</label>
+                <div class="col-md-8">
+                    <select id="id_role" name="role" class="form-control">
+                        <option value="citizen">Người dân</option>
+                        <option value="officer">Cán bộ</option>
+                    </select>
                 </div>
             </div>
             <div class="form-group">
@@ -29,8 +44,8 @@
             </div>
             <div class="form-group">
                 <div class="col-md-offset-3 col-md-8">
-                    <button type="submit" class="btn btn-primary">Đăng nhập</button>
-                    <a href="{% url 'register' %}" class="btn btn-default">Đăng ký</a>
+                    <button type="submit" class="btn btn-primary">Đăng ký</button>
+                    <a href="{% url 'login' %}" class="btn btn-default">Đăng nhập</a>
                 </div>
             </div>
         </form>
