@@ -1,54 +1,13 @@
-{% extends "app/layout.html" %}
+<form method="POST">
+    {% csrf_token %}
+    <input type="text" name="username" placeholder="Tên đăng nhập" required>
+    <input type="password" name="password" placeholder="Mật khẩu" required>
+    <input type="text" name="full_name" placeholder="Họ và tên" required>
 
-{% block content %}
-<h2>{{ title }}</h2>
+    <select name="role" required>
+        <option value="citizen">Công dân</option>
+        <option value="officer">Cán bộ Nhà nước</option>
+    </select>
 
-{% if messages %}
-<div class="messages">
-    {% for message in messages %}
-    <div class="alert alert-{{ message.tags|default:'info' }}">{{ message }}</div>
-    {% endfor %}
-</div>
-{% endif %}
-
-<div class="row">
-    <div class="col-md-7">
-        <form action="{% url 'register' %}" method="post" class="form-horizontal">
-            {% csrf_token %}
-            <div class="form-group">
-                <label for="id_username" class="col-md-3 control-label">Tên đăng nhập</label>
-                <div class="col-md-8">
-                    <input id="id_username" name="username" type="text" class="form-control" required>
-                </div>
-            </div>
-            <div class="form-group">
-                <label for="id_full_name" class="col-md-3 control-label">Họ tên</label>
-                <div class="col-md-8">
-                    <input id="id_full_name" name="full_name" type="text" class="form-control" required>
-                </div>
-            </div>
-            <div class="form-group">
-                <label for="id_role" class="col-md-3 control-label">Vai trò</label>
-                <div class="col-md-8">
-                    <select id="id_role" name="role" class="form-control">
-                        <option value="citizen">Người dân</option>
-                        <option value="officer">Cán bộ</option>
-                    </select>
-                </div>
-            </div>
-            <div class="form-group">
-                <label for="id_password" class="col-md-3 control-label">Mật khẩu</label>
-                <div class="col-md-8">
-                    <input id="id_password" name="password" type="password" class="form-control" required>
-                </div>
-            </div>
-            <div class="form-group">
-                <div class="col-md-offset-3 col-md-8">
-                    <button type="submit" class="btn btn-primary">Đăng ký</button>
-                    <a href="{% url 'login' %}" class="btn btn-default">Đăng nhập</a>
-                </div>
-            </div>
-        </form>
-    </div>
-</div>
-{% endblock %}
+    <button type="submit">Đăng ký</button>
+</form>

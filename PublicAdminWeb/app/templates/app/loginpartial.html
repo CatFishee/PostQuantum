@@ -1,14 +1,18 @@
+<!-- Dùng request.session.user vì chúng ta lưu phiên bằng MongoDB -->
 {% if request.session.user %}
-<form id="logoutForm" action="/logout/" method="post" class="navbar-right">
+<form id="logoutForm" action="{% url 'logout' %}" method="post" class="navbar-right">
     {% csrf_token %}
     <ul class="nav navbar-nav navbar-right">
         <li><span class="navbar-brand">Hello {{ request.session.user }}!</span></li>
         <li><a href="javascript:document.getElementById('logoutForm').submit()">Log off</a></li>
     </ul>
 </form>
+
 {% else %}
+
 <ul class="nav navbar-nav navbar-right">
     <li><a href="{% url 'register' %}">Register</a></li>
     <li><a href="{% url 'login' %}">Log in</a></li>
 </ul>
+
 {% endif %}

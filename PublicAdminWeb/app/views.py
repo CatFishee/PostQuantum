@@ -9,7 +9,10 @@ from django.core.files.storage import FileSystemStorage
 from django.shortcuts import redirect, render
 from django.utils.text import get_valid_filename
 
-from .crypto_utils import get_sha3_512_hash, sign_pdf_metadata
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+
+from .crypto_utils import sign_pdf_metadata
 from .db_connection import get_db
 from .forms import SignatureForm
 
@@ -18,8 +21,8 @@ try:
 except Exception:
     ObjectId = None
 
-
 db = get_db()
+ph = PasswordHasher()
 
 
 def _is_officer_role(role):
@@ -119,47 +122,69 @@ def register(request):
         username = request.POST["username"]
         role = request.POST["role"]
         password = request.POST["password"]
+        full_name = request.POST["full_name"]
 
-        pass_hash = get_sha3_512_hash(password.encode()).hex()
+        if db.users.find_one({"username": username}):
+            messages.error(request, "Tên đăng nhập đã tồn tại!")
+            return redirect("register")
+
+        pass_hash = ph.hash(password)
 
         user_data = {
             "username": username,
             "role": role,
             "password_hash": pass_hash,
-            "full_name": request.POST["full_name"],
-            "pqc_status": "pending",
+            "full_name": full_name,
+            "pqc_status": "active" if not _is_officer_role(role) else "inactive",
             "created_at": datetime.utcnow(),
         }
+
+        result = db.users.insert_one(user_data)
+        user_id = str(result.inserted_id)
 
         if _is_officer_role(role):
             try:
                 response = requests.post(
                     "http://127.0.0.1:5001/register_officer",
-                    params={"username": username, "full_name": user_data["full_name"], "position": "Cán bộ"},
+                    json={"officer_id": user_id, "username": username, "full_name": full_name},
                     timeout=15,
                 )
                 response.raise_for_status()
                 ca_data = response.json()
-                user_data["pqc_status"] = "active"
-                db.users.update_one({"username": username}, {"$set": user_data}, upsert=True)
+                
+                db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"pqc_status": "active"}})
+                
+                request.session["temp_private_key"] = ca_data.get("private_key_download") or ca_data.get("private_keys") or ca_data.get("private_key_to_download")
+                request.session["temp_username"] = username
+                
+                messages.success(request, "Tạo tài khoản Cán bộ thành công. Vui lòng tải khóa bảo mật!")
+                return redirect("download_key")
 
-                return render(
-                    request,
-                    "app/download_key.html",
-                    {
-                        "private_key": ca_data.get("private_key_download") or ca_data.get("private_key_to_download"),
-                        "username": username,
-                    },
-                )
             except Exception as e:
-                messages.error(request, f"Không thể kết nối tới CA Server: {e}")
+                db.users.delete_one({"_id": ObjectId(user_id)})
+                messages.error(request, f"Không thể kết nối tới CA Server hoặc có lỗi: {e}")
                 return redirect("register")
 
-        db.users.update_one({"username": username}, {"$set": user_data}, upsert=True)
         messages.success(request, "Đăng ký thành công!")
         return redirect("login")
 
     return render(request, "app/register.html", {"title": "Đăng ký", "year": datetime.now().year})
+
+
+def download_key(request):
+    private_key = request.session.pop("temp_private_key", None)
+    username = request.session.pop("temp_username", "Unknown")
+    
+    if not private_key:
+        messages.warning(request, "Không tìm thấy khóa hoặc khóa đã được tải. Vui lòng đăng nhập.")
+        return redirect("login")
+        
+    return render(request, "app/download_key.html", {
+        "private_keys": private_key,
+        "username": username,
+        "title": "Tải khóa",
+        "year": datetime.now().year
+    })
 
 
 def login(request):
@@ -173,11 +198,23 @@ def login(request):
 
         user = db.users.find_one({"username": username})
         if user:
-            attempt_hash = get_sha3_512_hash(password_attempt.encode()).hex()
-            if attempt_hash == user["password_hash"]:
+            try:
+                ph.verify(user["password_hash"], password_attempt)
+                
+                if ph.check_needs_rehash(user["password_hash"]):
+                    db.users.update_one({"_id": user["_id"]}, {"$set": {"password_hash": ph.hash(password_attempt)}})
+                
+                if user.get("pqc_status") == "inactive":
+                    messages.error(request, "Tài khoản của bạn bị lỗi hoặc chưa có khóa PQC hợp lệ.")
+                    return redirect("login")
+
+                request.session["user_id"] = str(user["_id"])
                 request.session["user"] = user["username"]
                 request.session["role"] = user["role"]
                 return redirect("dashboard")
+                
+            except VerifyMismatchError:
+                pass 
 
         messages.error(request, "Sai tên đăng nhập hoặc mật khẩu!")
 

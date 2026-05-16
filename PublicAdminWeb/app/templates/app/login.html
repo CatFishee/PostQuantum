@@ -1,39 +1,57 @@
 {% extends "app/layout.html" %}
 
 {% block content %}
+
 <h2>{{ title }}</h2>
-
-{% if messages %}
-<div class="messages">
-    {% for message in messages %}
-    <div class="alert alert-{{ message.tags|default:'info' }}">{{ message }}</div>
-    {% endfor %}
-</div>
-{% endif %}
-
 <div class="row">
-    <div class="col-md-7">
-        <form action="{% url 'login' %}" method="post" class="form-horizontal">
-            {% csrf_token %}
-            <div class="form-group">
-                <label for="id_username" class="col-md-3 control-label">Tên đăng nhập</label>
-                <div class="col-md-8">
-                    <input id="id_username" name="username" type="text" class="form-control" required>
+    <div class="col-md-8">
+        <section id="loginForm">
+            <form action="{% url 'login' %}" method="post" class="form-horizontal">
+                {% csrf_token %}
+                <h4>Use a local account to log in.</h4>
+                <hr />
+
+                <!-- Bắt thông báo lỗi từ file views.py -->
+                {% if messages %}
+                <div class="form-group">
+                    <div class="col-md-10 col-md-offset-2">
+                        {% for message in messages %}
+                        <p class="text-danger" style="color: red; font-weight: bold;">{{ message }}</p>
+                        {% endfor %}
+                    </div>
                 </div>
-            </div>
-            <div class="form-group">
-                <label for="id_password" class="col-md-3 control-label">Mật khẩu</label>
-                <div class="col-md-8">
-                    <input id="id_password" name="password" type="password" class="form-control" required>
+                {% endif %}
+
+                <div class="form-group">
+                    <label for="id_username" class="col-md-2 control-label">User name</label>
+                    <div class="col-md-10">
+                        <!-- input thuần -->
+                        <input type="text" name="username" id="id_username" class="form-control" required autofocus />
+                    </div>
                 </div>
-            </div>
-            <div class="form-group">
-                <div class="col-md-offset-3 col-md-8">
-                    <button type="submit" class="btn btn-primary">Đăng nhập</button>
-                    <a href="{% url 'register' %}" class="btn btn-default">Đăng ký</a>
+                <div class="form-group">
+                    <label for="id_password" class="col-md-2 control-label">Password</label>
+                    <div class="col-md-10">
+                        <!-- input thuần -->
+                        <input type="password" name="password" id="id_password" class="form-control" required />
+                    </div>
                 </div>
-            </div>
-        </form>
+                <div class="form-group">
+                    <div class="col-md-offset-2 col-md-10">
+                        <input type="submit" value="Log in" class="btn btn-default" />
+                    </div>
+                </div>
+            </form>
+        </section>
+    </div>
+    <div class="col-md-4">
+        <section id="socialLoginForm"></section>
     </div>
 </div>
+
+{% endblock %}
+
+{% block scripts %}
+    {% load static %}
+<script src="{% static 'app/scripts/jquery.validate.min.js' %}"></script>
 {% endblock %}
