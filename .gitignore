@@ -316,6 +316,10 @@ paket-files/
 __pycache__/
 *.pyc
 
+# Local uploads and generated PQC signing outputs
+PublicAdminWeb/media/
+*.pqc
+
 # Cake - Uncomment if you are using it
 # tools/**
 # !tools/packages.config
