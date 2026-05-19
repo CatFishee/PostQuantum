@@ -1,57 +1,55 @@
 {% extends "app/layout.html" %}
 
 {% block content %}
+<div class="row justify-content-center mt-5">
+    <div class="col-md-5 col-lg-4">
+        <div class="card shadow border-0">
+            <div class="card-header bg-dark text-white text-center py-3">
+                <h4 class="mb-0"><i class="fas fa-sign-in-alt"></i> Đăng Nhập</h4>
+            </div>
+            <div class="card-body p-4">
 
-<h2>{{ title }}</h2>
-<div class="row">
-    <div class="col-md-8">
-        <section id="loginForm">
-            <form action="{% url 'login' %}" method="post" class="form-horizontal">
-                {% csrf_token %}
-                <h4>Use a local account to log in.</h4>
-                <hr />
-
-                <!-- Bắt thông báo lỗi từ file views.py -->
+                <!-- Bắt thông báo (Thành công khi tạo tài khoản, hoặc lỗi do sai pass) -->
                 {% if messages %}
-                <div class="form-group">
-                    <div class="col-md-10 col-md-offset-2">
-                        {% for message in messages %}
-                        <p class="text-danger" style="color: red; font-weight: bold;">{{ message }}</p>
-                        {% endfor %}
-                    </div>
+                {% for message in messages %}
+                <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags }}{% endif %} alert-dismissible fade show shadow-sm" role="alert">
+                    <i class="fas fa-info-circle"></i> <strong>{{ message }}</strong>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
                 </div>
+                {% endfor %}
                 {% endif %}
 
-                <div class="form-group">
-                    <label for="id_username" class="col-md-2 control-label">User name</label>
-                    <div class="col-md-10">
-                        <!-- input thuần -->
-                        <input type="text" name="username" id="id_username" class="form-control" required autofocus />
+                <form action="{% url 'login' %}" method="post">
+                    {% csrf_token %}
+
+                    <div class="mb-3">
+                        <label for="id_username" class="form-label fw-bold">Tên đăng nhập</label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="fas fa-user"></i></span>
+                            <input type="text" name="username" id="id_username" class="form-control" placeholder="Nhập tên tài khoản" required autofocus />
+                        </div>
                     </div>
-                </div>
-                <div class="form-group">
-                    <label for="id_password" class="col-md-2 control-label">Password</label>
-                    <div class="col-md-10">
-                        <!-- input thuần -->
-                        <input type="password" name="password" id="id_password" class="form-control" required />
+
+                    <div class="mb-4">
+                        <label for="id_password" class="form-label fw-bold">Mật khẩu</label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="fas fa-lock"></i></span>
+                            <input type="password" name="password" id="id_password" class="form-control" placeholder="Nhập mật khẩu" required />
+                        </div>
                     </div>
+
+                    <button type="submit" class="btn btn-dark w-100 py-2 fs-5 shadow-sm">
+                        Đăng nhập
+                    </button>
+                </form>
+
+                <div class="text-center mt-4">
+                    <span class="text-muted">Chưa có tài khoản?</span>
+                    <a href="{% url 'register' %}" class="text-decoration-none fw-bold text-primary">Tạo tài khoản mới</a>
                 </div>
-                <div class="form-group">
-                    <div class="col-md-offset-2 col-md-10">
-                        <input type="submit" value="Log in" class="btn btn-default" />
-                    </div>
-                </div>
-            </form>
-        </section>
-    </div>
-    <div class="col-md-4">
-        <section id="socialLoginForm"></section>
+
+            </div>
+        </div>
     </div>
 </div>
-
-{% endblock %}
-
-{% block scripts %}
-    {% load static %}
-<script src="{% static 'app/scripts/jquery.validate.min.js' %}"></script>
 {% endblock %}

@@ -1,13 +1,73 @@
-<form method="POST">
-    {% csrf_token %}
-    <input type="text" name="username" placeholder="Tên đăng nhập" required>
-    <input type="password" name="password" placeholder="Mật khẩu" required>
-    <input type="text" name="full_name" placeholder="Họ và tên" required>
+{% extends "app/layout.html" %}
 
-    <select name="role" required>
-        <option value="citizen">Công dân</option>
-        <option value="officer">Cán bộ Nhà nước</option>
-    </select>
+{% block content %}
+<div class="row justify-content-center mt-4">
+    <div class="col-md-6 col-lg-5">
+        <div class="card shadow border-0">
+            <div class="card-header bg-primary text-white text-center py-3">
+                <h4 class="mb-0"><i class="fas fa-user-plus"></i> Đăng Ký Tài Khoản</h4>
+            </div>
+            <div class="card-body p-4">
 
-    <button type="submit">Đăng ký</button>
-</form>
+                <!-- Hiển thị thông báo (Thành công / Thất bại) -->
+                {% if messages %}
+                {% for message in messages %}
+                <!-- Nếu message là lỗi, in màu đỏ (danger), thành công in màu xanh (success) -->
+                <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags }}{% endif %} alert-dismissible fade show shadow-sm" role="alert">
+                    <i class="fas fa-info-circle"></i> {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+                {% endfor %}
+                {% endif %}
+
+                <form method="POST" action="{% url 'register' %}">
+                    {% csrf_token %}
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Họ và tên</label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="fas fa-id-card"></i></span>
+                            <input type="text" name="full_name" class="form-control" placeholder="Nhập họ và tên thật" required>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Tên đăng nhập</label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="fas fa-user"></i></span>
+                            <input type="text" name="username" class="form-control" placeholder="Tên tài khoản viết liền không dấu" required>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Mật khẩu</label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="fas fa-lock"></i></span>
+                            <input type="password" name="password" class="form-control" placeholder="Nhập mật khẩu an toàn" required>
+                        </div>
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="form-label fw-bold">Vai trò</label>
+                        <select name="role" class="form-select" required>
+                            <option value="citizen" selected>Người dân / Doanh nghiệp</option>
+                            <option value="officer">Cán bộ cơ quan Nhà nước</option>
+                        </select>
+                        <small class="text-muted mt-1 d-block"><i class="fas fa-info-circle"></i> Nếu chọn "Cán bộ", hệ thống sẽ tự động liên kết với CA Server để cấp khóa sinh trắc (PQC Keys).</small>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary w-100 py-2 fs-5 fw-bold shadow-sm">
+                        <i class="fas fa-check-circle"></i> Xác nhận Đăng ký
+                    </button>
+                </form>
+
+                <div class="text-center mt-4">
+                    <span class="text-muted">Đã có tài khoản?</span>
+                    <a href="{% url 'login' %}" class="text-decoration-none fw-bold">Đăng nhập ngay</a>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

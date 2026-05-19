@@ -1,55 +1,83 @@
 <!DOCTYPE html>
-<html>
+<html lang="vi">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }} - My Django Application</title>
-    {% load static %}
-    <link rel="stylesheet" type="text/css" href="{% static 'app/content/bootstrap.min.css' %}" />
-    <link rel="stylesheet" type="text/css" href="{% static 'app/content/site.css' %}" />
-    <script src="{% static 'app/scripts/modernizr-2.6.2.js' %}"></script>
-</head>
+    <title>{{ title }} - Cổng Dịch Vụ Công PQC</title>
 
-<body>
-    <div class="navbar navbar-inverse navbar-fixed-top">
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+
+    <style>
+        body {
+            background-color: #f8f9fa;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        .navbar {
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+
+        .card {
+            border-radius: 12px;
+        }
+
+        .footer {
+            margin-top: 50px;
+            padding: 20px 0;
+            text-align: center;
+            color: #6c757d;
+            background-color: #fff;
+            border-top: 1px solid #e9ecef;
+        }
+    </style>
+</head>
+<body class="d-flex flex-column min-vh-100">
+
+    <!-- Thanh Điều Hướng (Navbar) -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container">
-            <div class="navbar-header">
-                <button type="button" class="navbar-toggle" data-toggle="collapse" data-target=".navbar-collapse">
-                    <span class="icon-bar"></span>
-                    <span class="icon-bar"></span>
-                    <span class="icon-bar"></span>
-                </button>
-                <a href="/" class="navbar-brand">PQC Admin</a>
-            </div>
-            <div class="navbar-collapse collapse">
-                <ul class="nav navbar-nav">
-                    <li><a href="{% url 'home' %}">Home</a></li>
-                    {% if request.session.user %}
-                    <li><a href="{% url 'dashboard' %}">Dashboard</a></li>
-                    {% endif %}
-                    {% if request.session.role|lower == "officer" %}
-                    <li><a href="{% url 'sign_document_manual' %}">Ký tài liệu</a></li>
-                    {% endif %}
-                    <li><a href="{% url 'about' %}">About</a></li>
-                    <li><a href="{% url 'contact' %}">Contact</a></li>
+            <a class="navbar-brand fw-bold" href="{% url 'home' %}">
+                <i class="fas fa-shield-alt"></i> PQC Admin System
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'home' %}">Trang chủ</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'about' %}">Giới thiệu</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'contact' %}">Liên hệ</a>
+                    </li>
                 </ul>
+                <!-- Khối hiển thị Đăng nhập / Tài khoản -->
                 {% include 'app/loginpartial.html' %}
             </div>
         </div>
+    </nav>
+
+    <!-- Nội dung thay đổi của từng trang -->
+    <div class="container flex-grow-1 mt-4 mb-5">
+        {% block content %}{% endblock %}
     </div>
 
-    <div class="container body-content">
-{% block content %}{% endblock %}
-        <hr/>
-        <footer>
-            <p>&copy; {{ year }} - My Django Application</p>
-        </footer>
-    </div>
+    <!-- Chân trang -->
+    <footer class="footer mt-auto">
+        <div class="container">
+            <p>&copy; {{ year }} - Hệ Thống Hành Chính Công Bảo Mật Hậu Lượng Tử (Pure PQC)</p>
+        </div>
+    </footer>
 
-    <script src="{% static 'app/scripts/jquery-1.10.2.js' %}"></script>
-    <script src="{% static 'app/scripts/bootstrap.js' %}"></script>
-    <script src="{% static 'app/scripts/respond.js' %}"></script>
-{% block scripts %}{% endblock %}
-
+    <!-- Bootstrap 5 JS Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    {% block scripts %}{% endblock %}
 </body>
 </html>
