@@ -1,40 +1,74 @@
-<!-- templates/app/download_key.html -->
-{% extends "app/base.html" %} <!-- Tùy layout của bạn -->
+{% extends "app/layout.html" %}
+
 {% block content %}
-<div class="container mt-5 text-center">
-    <h2>CẤP PHÁT KHÓA HẬU LƯỢNG TỬ THÀNH CÔNG</h2>
-    <div class="alert alert-warning mt-3">
-        <strong>LƯU Ý QUAN TRỌNG:</strong> Đây là Cặp khóa Cá nhân (Private Keys: Kyber & Dilithium) của Cán bộ <b>{{ username }}</b>.<br />
-        Khóa này <b>chỉ hiển thị MỘT LẦN DUY NHẤT</b> và không được lưu trên Server. Vui lòng tải về máy và bảo quản an toàn (ví dụ: lưu trong USB).
-    </div>
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-8 mt-4">
+            <div class="card shadow border-0">
+                <div class="card-header bg-success text-white">
+                    <h4 class="mb-0">
+                        <!-- Nếu bạn có FontAwesome thì icon sẽ hiện, không có cũng không sao -->
+                        <i class="fas fa-key"></i> Tải Khóa Bảo Mật PQC
+                    </h4>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-warning">
+                        <strong><i class="fas fa-exclamation-triangle"></i> QUAN TRỌNG:</strong><br />
+                        Xin chào <strong>{{ username }}</strong>, tài khoản Cán bộ của bạn đã được khởi tạo thành công cùng với bộ khóa mật mã hậu lượng tử (ML-KEM và ML-DSA).<br /><br />
+                        Vì lý do bảo mật, máy chủ Web <strong>KHÔNG</strong> lưu trữ khóa bí mật này. Bạn <strong>BẮT BUỘC</strong> phải tải file dưới đây và cất giữ cẩn thận an toàn. Bạn sẽ cần file này để đưa vào hệ thống mỗi khi cần Ký tài liệu PDF.
+                    </div>
 
-    <button id="downloadBtn" class="btn btn-lg btn-success mt-3">
-        ⬇️ Tải xuống Keystore (.pqc)
-    </button>
+                    <div class="text-center mt-4 mb-4">
+                        <button id="downloadBtn" class="btn btn-primary btn-lg">
+                            <i class="fas fa-download"></i> Tải File Khóa (.json)
+                        </button>
+                    </div>
 
-    <div class="mt-4">
-        <a href="{% url 'login' %}" class="btn btn-outline-primary">Tới trang Đăng nhập</a>
+                    <hr />
+
+                    <div class="text-center mt-3">
+                        <p class="text-muted">Sau khi đã tải file an toàn, bạn có thể trở về trang đăng nhập.</p>
+                        <a href="{% url 'login' %}" class="btn btn-outline-secondary">
+                            Đi đến Đăng nhập
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
+<!-- Lưu trữ JSON Key dưới dạng thẻ ẩn để JS lấy dữ liệu (đã dùng filter safe để không bị escape HTML) -->
+<script type="application/json" id="keysData">
+    {{ private_keys|safe }}
+</script>
+
 <script>
-document.getElementById('downloadBtn').addEventListener('click', function() {
-    // Lấy chuỗi Private Keys từ Server đưa vào
-    const keyData = `{{ private_keys|safe }}`;
-    const filename = "{{ username }}_private_keys.pqc";
+    document.addEventListener("DOMContentLoaded", function () {
+        document.getElementById('downloadBtn').addEventListener('click', function () {
+            // Lấy chuỗi JSON từ thẻ script
+            var keysJsonString = document.getElementById('keysData').textContent.trim();
 
-    // Tạo Blob và tự động click để tải về
-    const blob = new Blob([keyData], { type: "text/plain;charset=utf-8" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+            // Tạo file định dạng Blob
+            var blob = new Blob([keysJsonString], { type: "application/json" });
+            var url = URL.createObjectURL(blob);
 
-    // Đổi trạng thái nút
-    this.innerText = "✅ Đã tải xuống";
-    this.classList.replace("btn-success", "btn-secondary");
-});
+            // Tạo thẻ a ẩn để giả lập hành động Click tải file
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = "PQC_Keys_" + "{{ username }}" + ".json";
+            document.body.appendChild(a);
+            a.click();
+
+            // Dọn dẹp bộ nhớ
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            // Đổi màu nút để báo đã tải
+            this.classList.remove('btn-primary');
+            this.classList.add('btn-success');
+            this.innerHTML = '<i class="fas fa-check"></i> Đã tải xuống thành công';
+        });
+    });
 </script>
 {% endblock %}

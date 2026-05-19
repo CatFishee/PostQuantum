@@ -4,14 +4,17 @@ fastapi>=0.110.0
 uvicorn>=0.30.0
 pydantic>=2.7.0
 
-# --- Mật mã hậu lượng tử & PDF ---
-# Quan trọng: Core PQC wrapper
+# --- Mật mã hậu lượng tử & Kênh truyền ---
 liboqs-python==0.14.1
-# Xử lý PDF và Metadata
+cryptography>=42.0.0
+
+# --- Xử lý PDF và Metadata ---
 pikepdf>=9.0.0
 lxml>=5.2.0
-# Thêm Pillow trực tiếp để tránh lỗi dependency của pikepdf
 Pillow>=10.0.0
+
+# --- Xử lý hashing hậu lượng tử ---
+argon2-cffi>=23.1.0
 
 # --- Database (MongoDB) ---
 pymongo>=4.7.0
@@ -22,7 +25,7 @@ requests>=2.31.0
 python-multipart>=0.0.9
 python-dotenv>=1.0.1
 
-# --- Dependencies bổ trợ (Để pip tự giải quyết version tốt hơn) ---
+# --- Dependencies bổ trợ ---
 pydantic_core
 starlette
 typing_extensions

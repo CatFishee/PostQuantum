@@ -1,22 +1,47 @@
 import datetime
 import hashlib
 import uuid
+import os
 from xml.etree import ElementTree
 
 import oqs
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pikepdf import Pdf
 
 
-def get_sha3_512_hash(data: bytes):
-    return hashlib.sha3_512(data).digest()
+# --- Hashing: Chuyển sang SHAKE-256 theo đúng chuẩn Đồ án ---
+def get_shake_256_hash(data: bytes, length: int = 32):
+    return hashlib.shake_256(data).digest(length)
 
 
 def hash_pdf(file_path):
-    sha3 = hashlib.sha3_512()
+    shake = hashlib.shake_256()
     with open(file_path, "rb") as f:
         while chunk := f.read(8192):
-            sha3.update(chunk)
-    return sha3.digest()
+            shake.update(chunk)
+    return shake.digest(32)
+
+
+# --- AES-GCM cho Session Key (Kênh truyền Web <-> CA) ---
+def aes_gcm_encrypt(key: bytes, plaintext: bytes) -> tuple[bytes, bytes, bytes]:
+    aesgcm = AESGCM(key[:32]) # KEM shared_secret là 32 bytes
+    iv = os.urandom(12)
+    ciphertext_with_tag = aesgcm.encrypt(iv, plaintext, None)
+    ciphertext = ciphertext_with_tag[:-16]
+    tag = ciphertext_with_tag[-16:]
+    return iv, ciphertext, tag
+
+
+def aes_gcm_decrypt(key: bytes, iv: bytes, ciphertext: bytes, tag: bytes) -> bytes:
+    aesgcm = AESGCM(key[:32])
+    return aesgcm.decrypt(iv, ciphertext + tag, None)
+
+
+# --- KEM Encapsulation cho Web gửi lên CA ---
+def web_encapsulate(ca_public_key: bytes):
+    with oqs.KeyEncapsulation("ML-KEM-1024") as kem:
+        ciphertext, shared_secret = kem.encap_secret(ca_public_key)
+        return ciphertext, shared_secret
 
 
 def _normalize_hex(hex_text: str) -> str:
@@ -24,7 +49,6 @@ def _normalize_hex(hex_text: str) -> str:
 
 
 def _sign_with_private_key(message: bytes, private_key: bytes, sig_alg: str) -> bytes:
-    """Support both common liboqs-python signing APIs."""
     try:
         with oqs.Signature(sig_alg, secret_key=private_key) as signer:
             return signer.sign(message)
@@ -48,7 +72,7 @@ def build_pqc_signature_xml(
         "docId": doc_id,
         "signerId": signer_id,
         "algorithm": algorithm,
-        "hashFunction": hash_function,
+        "hashFunction": hash_function, # Mặc định sẽ là SHAKE-256
         "signatureValue": signature_hex,
         "signerPublicKey": public_key_hex,
         "signedAt": signed_at,
@@ -73,9 +97,11 @@ def sign_pdf_metadata(
     file_hash = hash_pdf(input_pdf_path)
     signature = _sign_with_private_key(file_hash, private_key, sig_alg)
     signature_hex = signature.hex()
+    
+    # Định dạng ISO 8601
     signed_at = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     signature_id = str(uuid.uuid4())
-    hash_function = "SHA3-512"
+    hash_function = "SHAKE-256"
 
     xmp_xml = build_pqc_signature_xml(
         doc_id=doc_id,
@@ -101,8 +127,6 @@ def sign_pdf_metadata(
                 meta["pqc:SignerPublicKey"] = public_key_hex
                 meta["pqc:SignatureXML"] = xmp_xml
         except Exception:
-            # Some pikepdf versions reject custom XMP namespaces. DocInfo still
-            # keeps the XML signature metadata inside the signed PDF.
             pass
         pdf.docinfo["/PQCSignatureXML"] = xmp_xml
         pdf.save(output_pdf_path)
@@ -116,26 +140,3 @@ def sign_pdf_metadata(
         "signed_at": signed_at,
         "output_pdf_path": output_pdf_path,
     }
-
-
-def encapsulate_private_key(private_key_to_protect: bytes, ca_public_key_kem: bytes):
-    with oqs.KeyEncapsulation("ML-KEM-1024") as kem:
-        ciphertext, shared_secret = kem.encap_secret(ca_public_key_kem)
-
-        mask = get_sha3_512_hash(shared_secret)
-        extended_mask = (mask * ((len(private_key_to_protect) // len(mask)) + 1))[:len(private_key_to_protect)]
-        encrypted_pk = bytes(a ^ b for a, b in zip(private_key_to_protect, extended_mask))
-
-        return ciphertext.hex(), encrypted_pk.hex()
-
-
-def decapsulate_private_key(encrypted_pk_hex: str, ciphertext_hex: str, ca_private_key_kem: bytes):
-    with oqs.KeyEncapsulation("ML-KEM-1024") as kem:
-        shared_secret = kem.decap_secret(bytes.fromhex(ciphertext_hex), ca_private_key_kem)
-
-        mask = get_sha3_512_hash(shared_secret)
-        encrypted_pk = bytes.fromhex(encrypted_pk_hex)
-        extended_mask = (mask * ((len(encrypted_pk) // len(mask)) + 1))[:len(encrypted_pk)]
-        original_pk = bytes(a ^ b for a, b in zip(encrypted_pk, extended_mask))
-
-        return original_pk.hex()

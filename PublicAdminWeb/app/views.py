@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 from datetime import datetime
 
 import requests
@@ -12,7 +13,7 @@ from django.utils.text import get_valid_filename
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
-from .crypto_utils import sign_pdf_metadata
+from .crypto_utils import sign_pdf_metadata, web_encapsulate, aes_gcm_encrypt, aes_gcm_decrypt
 from .db_connection import get_db
 from .forms import SignatureForm
 
@@ -53,15 +54,17 @@ def _find_document(doc_id):
     return None
 
 
-def _get_officer_public_key(username):
-    if db is None or not username:
+def _get_officer_public_key(user_id):
+    if db is None or not user_id:
         return ""
-
-    officer = db.officers.find_one({"username": username})
-    if not officer:
-        return ""
-
-    return officer.get("public_key") or officer.get("ml_dsa_pk") or ""
+    
+    _oid = ObjectId(user_id) if ObjectId else user_id
+    officer_key = db.officer_keys.find_one({"officer_id": _oid, "status": "active"})
+    
+    if officer_key and "ml_dsa_pk" in officer_key:
+        pk = officer_key["ml_dsa_pk"]
+        return pk.hex() if isinstance(pk, bytes) else pk
+    return ""
 
 
 def _save_uploaded_file(uploaded_file, folder):
@@ -76,14 +79,27 @@ def _save_uploaded_file(uploaded_file, folder):
     return storage.path(saved_name), relative_path
 
 
-def _update_signed_document(doc_id, signed_relative_path, signature_result):
+def _update_signed_document(doc_id, signed_relative_path, signature_result, signer_id):
     if db is None or not doc_id:
         return
 
+    # 1. Lưu vào collection `signatures` (theo chuẩn PDF)
+    sig_doc = {
+        "doc_id": ObjectId(doc_id) if ObjectId else doc_id,
+        "signer_id": ObjectId(signer_id) if ObjectId else signer_id,
+        "algorithm": signature_result["algorithm"],
+        "signature_value": bytes.fromhex(signature_result["signature_value"]),
+        "hash_function": signature_result["hash_function"], # SHAKE-256
+        "xmp_metadata_embedded": signature_result["xmp_metadata_embedded"],
+        "signed_at": datetime.strptime(signature_result["signed_at"], "%Y-%m-%dT%H:%M:%SZ")
+    }
+    insert_res = db.signatures.insert_one(sig_doc)
+
+    # 2. Cập nhật vào collection `applications`
     update_data = {
         "status": "processed",
         "result_document.signed_ciphertext_path": signed_relative_path,
-        "result_document.pqc_signature_id": signature_result["signature_id"],
+        "result_document.pqc_signature_id": insert_res.inserted_id,
     }
 
     for collection_name in ("applications", "documents"):
@@ -144,25 +160,52 @@ def register(request):
 
         if _is_officer_role(role):
             try:
-                response = requests.post(
-                    "http://127.0.0.1:5001/register_officer",
-                    json={"officer_id": user_id, "username": username, "full_name": full_name},
-                    timeout=15,
-                )
+                # 1. Lấy Master KEM Public Key
+                r_pub = requests.get("http://127.0.0.1:5001/master-public-key", timeout=10)
+                r_pub.raise_for_status()
+                master_pub = bytes.fromhex(r_pub.json()["public_key"])
+
+                # 2. Encapsulate sinh Session Key
+                kem_cipher, shared_secret = web_encapsulate(master_pub)
+
+                # 3. Đóng gói Payload với AES-GCM
+                payload_dict = {"officer_id": user_id, "username": username, "full_name": full_name}
+                payload_bytes = json.dumps(payload_dict).encode('utf-8')
+                iv, cipher, tag = aes_gcm_encrypt(shared_secret, payload_bytes)
+
+                # 4. Gửi Request lên CA
+                ca_req_data = {
+                    "kem_ciphertext": kem_cipher.hex(),
+                    "aes_iv": iv.hex(),
+                    "aes_tag": tag.hex(),
+                    "encrypted_payload": cipher.hex()
+                }
+                response = requests.post("http://127.0.0.1:5001/register_officer", json=ca_req_data, timeout=15)
                 response.raise_for_status()
-                ca_data = response.json()
+                ca_resp = response.json()
+
+                # 5. Giải mã Response để lấy 2 Private Keys
+                resp_bytes = aes_gcm_decrypt(
+                    shared_secret,
+                    bytes.fromhex(ca_resp["aes_iv"]),
+                    bytes.fromhex(ca_resp["encrypted_payload"]),
+                    bytes.fromhex(ca_resp["aes_tag"])
+                )
+                priv_keys_dict = json.loads(resp_bytes.decode('utf-8'))
                 
+                # Bật trạng thái active cho User
                 db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"pqc_status": "active"}})
                 
-                request.session["temp_private_key"] = ca_data.get("private_key_download") or ca_data.get("private_keys") or ca_data.get("private_key_to_download")
+                # Lưu vào Session
+                request.session["temp_private_keys"] = priv_keys_dict
                 request.session["temp_username"] = username
                 
-                messages.success(request, "Tạo tài khoản Cán bộ thành công. Vui lòng tải khóa bảo mật!")
+                messages.success(request, "Tạo tài khoản Cán bộ thành công. Vui lòng tải file chứa bộ khóa bảo mật!")
                 return redirect("download_key")
 
             except Exception as e:
                 db.users.delete_one({"_id": ObjectId(user_id)})
-                messages.error(request, f"Không thể kết nối tới CA Server hoặc có lỗi: {e}")
+                messages.error(request, f"Không thể kết nối tới CA Server hoặc lỗi bảo mật: {e}")
                 return redirect("register")
 
         messages.success(request, "Đăng ký thành công!")
@@ -172,15 +215,18 @@ def register(request):
 
 
 def download_key(request):
-    private_key = request.session.pop("temp_private_key", None)
+    priv_keys = request.session.pop("temp_private_keys", None)
     username = request.session.pop("temp_username", "Unknown")
     
-    if not private_key:
+    if not priv_keys:
         messages.warning(request, "Không tìm thấy khóa hoặc khóa đã được tải. Vui lòng đăng nhập.")
         return redirect("login")
+    
+    # Định dạng chuỗi JSON đẹp mắt để tải về dưới dạng file .json
+    keys_json_str = json.dumps(priv_keys, indent=4)
         
     return render(request, "app/download_key.html", {
-        "private_keys": private_key,
+        "private_keys": keys_json_str,
         "username": username,
         "title": "Tải khóa",
         "year": datetime.now().year
@@ -253,15 +299,22 @@ def sign_document_view(request, doc_id=None):
         if form.is_valid():
             pdf_path, pdf_relative_path = _save_uploaded_file(form.cleaned_data["pdf_file"], "pending_signatures")
             key_file = form.cleaned_data["key_file"]
-            private_key_hex = "".join(key_file.read().decode("utf-8").split())
+            
+            # Đọc file Json user vừa upload (chứa 2 khóa)
+            key_data = key_file.read().decode("utf-8")
+            try:
+                keys_dict = json.loads(key_data)
+                private_key_hex = keys_dict.get("ml_dsa_priv", "")
+            except json.JSONDecodeError:
+                # Tương thích ngược nếu user upload mỗi khóa hex
+                private_key_hex = "".join(key_data.split())
 
             try:
                 bytes.fromhex(private_key_hex)
             except ValueError:
-                messages.error(request, "Private key không phải chuỗi hex hợp lệ.")
+                messages.error(request, "File khóa không hợp lệ (Không tìm thấy chuỗi ml_dsa_priv).")
                 return render(
-                    request,
-                    "app/sign.html",
+                    request, "app/sign.html",
                     {"form": form, "document": document_context, "title": "Ký tài liệu", "year": datetime.now().year},
                 )
 
@@ -272,7 +325,7 @@ def sign_document_view(request, doc_id=None):
             output_path = os.path.join(output_dir, output_name)
             signed_relative_path = f"signed_documents/{output_name}".replace("\\", "/")
 
-            public_key_hex = form.cleaned_data["public_key_hex"].strip() or _get_officer_public_key(request.session["user"])
+            public_key_hex = form.cleaned_data["public_key_hex"].strip() or _get_officer_public_key(request.session["user_id"])
 
             try:
                 signature_result = sign_pdf_metadata(
@@ -280,21 +333,20 @@ def sign_document_view(request, doc_id=None):
                     output_path,
                     private_key_hex,
                     public_key_hex,
-                    signer_id=request.session["user"],
+                    signer_id=request.session["user_id"],
                     doc_id=str(doc_id or ""),
                     sig_alg=form.cleaned_data["algorithm"],
                 )
-                _update_signed_document(doc_id, signed_relative_path, signature_result)
+                _update_signed_document(doc_id, signed_relative_path, signature_result, request.session["user_id"])
             except Exception as e:
                 messages.error(request, f"Ký tài liệu thất bại: {e}")
                 return render(
-                    request,
-                    "app/sign.html",
+                    request, "app/sign.html",
                     {"form": form, "document": document_context, "title": "Ký tài liệu", "year": datetime.now().year},
                 )
 
             signed_url = settings.MEDIA_URL + signed_relative_path
-            messages.success(request, "Đã ký PDF bằng chữ ký số hậu lượng tử.")
+            messages.success(request, "Đã ký PDF bằng chữ ký số hậu lượng tử (ML-DSA).")
             return render(
                 request,
                 "app/sign.html",

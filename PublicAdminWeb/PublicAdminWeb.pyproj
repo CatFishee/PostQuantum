@@ -6,7 +6,7 @@
     <RootNamespace>PublicAdminWeb</RootNamespace>
     <TestFramework>Pytest</TestFramework>
     <SuppressEnvironmentCreationPrompt>True</SuppressEnvironmentCreationPrompt>
-    <InterpreterId>Global|VisualStudio|venv (Python 3.14.3)</InterpreterId>
+    <InterpreterId>Global|VisualStudio|venv (Python 3.14 (64-bit))</InterpreterId>
   </PropertyGroup>
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
@@ -102,7 +102,6 @@
   </ItemGroup>
   <ItemGroup>
     <InterpreterReference Include="Global|VisualStudio|venv (Python 3.14 (64-bit))" />
-    <InterpreterReference Include="Global|VisualStudio|venv (Python 3.14.3)" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.Django.targets" />
   <!-- Specify pre- and post-build commands in the BeforeBuild and 
