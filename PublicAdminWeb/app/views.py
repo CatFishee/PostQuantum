@@ -13,9 +13,16 @@ from django.utils.text import get_valid_filename
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
-from .crypto_utils import sign_pdf_metadata, web_encapsulate, aes_gcm_encrypt, aes_gcm_decrypt
+from .crypto_utils import (
+    aes_gcm_decrypt,
+    aes_gcm_encrypt,
+    read_pqc_signature_metadata,
+    sign_pdf_metadata,
+    verify_pdf_signature,
+    web_encapsulate,
+)
 from .db_connection import get_db
-from .forms import SignatureForm
+from .forms import SignatureForm, VerifySignatureForm
 
 try:
     from bson import ObjectId
@@ -30,13 +37,23 @@ def _is_officer_role(role):
     return str(role or "").lower() == "officer"
 
 
+def _to_mongo_id(value):
+    if ObjectId is None or not value:
+        return value
+    if isinstance(value, ObjectId):
+        return value
+    try:
+        return ObjectId(str(value))
+    except Exception:
+        return value
+
+
 def _object_id_queries(doc_id):
-    queries = [{"_id": doc_id}]
-    if ObjectId is not None:
-        try:
-            queries.insert(0, {"_id": ObjectId(doc_id)})
-        except Exception:
-            pass
+    queries = []
+    mongo_id = _to_mongo_id(doc_id)
+    if mongo_id != doc_id:
+        queries.append({"_id": mongo_id})
+    queries.append({"_id": doc_id})
     return queries
 
 
@@ -54,16 +71,47 @@ def _find_document(doc_id):
     return None
 
 
-def _get_officer_public_key(user_id):
-    if db is None or not user_id:
+def _binary_to_hex(value):
+    if not value:
         return ""
-    
-    _oid = ObjectId(user_id) if ObjectId else user_id
-    officer_key = db.officer_keys.find_one({"officer_id": _oid, "status": "active"})
-    
+    if isinstance(value, str):
+        return "".join(value.split())
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).hex()
+    if hasattr(value, "hex"):
+        return value.hex()
+    return str(value)
+
+
+def _get_officer_key_doc(user_id):
+    if db is None or not user_id:
+        return None
+
+    queries = []
+    mongo_id = _to_mongo_id(user_id)
+    if mongo_id != user_id:
+        queries.append({"officer_id": mongo_id, "status": "active"})
+    queries.append({"officer_id": user_id, "status": "active"})
+    queries.append({"officer_id": str(user_id), "status": "active"})
+
+    for query in queries:
+        officer_key = db.officer_keys.find_one(query)
+        if officer_key:
+            return officer_key
+    return None
+
+
+def _get_officer_public_key(user_id):
+    officer_key = _get_officer_key_doc(user_id)
     if officer_key and "ml_dsa_pk" in officer_key:
-        pk = officer_key["ml_dsa_pk"]
-        return pk.hex() if isinstance(pk, bytes) else pk
+        return _binary_to_hex(officer_key["ml_dsa_pk"])
+    return ""
+
+
+def _get_pqc_cert_serial(user_id):
+    officer_key = _get_officer_key_doc(user_id)
+    if officer_key:
+        return str(officer_key.get("cert_serial", ""))
     return ""
 
 
@@ -85,13 +133,15 @@ def _update_signed_document(doc_id, signed_relative_path, signature_result, sign
 
     # 1. Lưu vào collection `signatures` (theo chuẩn PDF)
     sig_doc = {
-        "doc_id": ObjectId(doc_id) if ObjectId else doc_id,
-        "signer_id": ObjectId(signer_id) if ObjectId else signer_id,
+        "doc_id": _to_mongo_id(doc_id),
+        "signer_id": _to_mongo_id(signer_id),
         "algorithm": signature_result["algorithm"],
         "signature_value": bytes.fromhex(signature_result["signature_value"]),
-        "hash_function": signature_result["hash_function"], # SHAKE-256
+        "hash_function": signature_result["hash_function"],
+        "document_hash": signature_result.get("document_hash", ""),
+        "pqc_cert_serial": signature_result.get("pqc_cert_serial", ""),
         "xmp_metadata_embedded": signature_result["xmp_metadata_embedded"],
-        "signed_at": datetime.strptime(signature_result["signed_at"], "%Y-%m-%dT%H:%M:%SZ")
+        "signed_at": datetime.strptime(signature_result["signed_at"], "%Y-%m-%dT%H:%M:%SZ"),
     }
     insert_res = db.signatures.insert_one(sig_doc)
 
@@ -123,6 +173,17 @@ def _document_rows(raw_docs):
             }
         )
     return rows
+
+
+def _get_user_display_name(user_id):
+    if db is None or not user_id:
+        return ""
+
+    for query in _object_id_queries(user_id):
+        user = db.users.find_one(query)
+        if user:
+            return user.get("full_name") or user.get("username") or str(user.get("_id", ""))
+    return ""
 
 
 def home(request):
@@ -302,14 +363,32 @@ def sign_document_view(request, doc_id=None):
             
             # Đọc file Json user vừa upload (chứa 2 khóa)
             key_data = key_file.read().decode("utf-8")
+            key_public_key_hex = ""
+
             try:
                 keys_dict = json.loads(key_data)
-                private_key_hex = keys_dict.get("ml_dsa_priv", "")
+                private_key_hex = (
+                    keys_dict.get("ml_dsa_priv")
+                    or keys_dict.get("ml_dsa_sk")
+                    or keys_dict.get("ml_dsa_private_key")
+                    or ""
+                )
+                key_public_key_hex = (
+                    keys_dict.get("ml_dsa_pk")
+                    or keys_dict.get("ml_dsa_pub")
+                    or keys_dict.get("ml_dsa_public_key")
+                    or ""
+                )
             except json.JSONDecodeError:
                 # Tương thích ngược nếu user upload mỗi khóa hex
                 private_key_hex = "".join(key_data.split())
 
+            private_key_hex = "".join(str(private_key_hex or "").split())
+            key_public_key_hex = "".join(str(key_public_key_hex or "").split())
+
             try:
+                if not private_key_hex:
+                    raise ValueError
                 bytes.fromhex(private_key_hex)
             except ValueError:
                 messages.error(request, "File khóa không hợp lệ (Không tìm thấy chuỗi ml_dsa_priv).")
@@ -325,7 +404,12 @@ def sign_document_view(request, doc_id=None):
             output_path = os.path.join(output_dir, output_name)
             signed_relative_path = f"signed_documents/{output_name}".replace("\\", "/")
 
-            public_key_hex = form.cleaned_data["public_key_hex"].strip() or _get_officer_public_key(request.session["user_id"])
+            public_key_hex = (
+                form.cleaned_data["public_key_hex"].strip()
+                or key_public_key_hex
+                or _get_officer_public_key(request.session["user_id"])
+            )
+            pqc_cert_serial = _get_pqc_cert_serial(request.session["user_id"])
 
             try:
                 signature_result = sign_pdf_metadata(
@@ -336,6 +420,7 @@ def sign_document_view(request, doc_id=None):
                     signer_id=request.session["user_id"],
                     doc_id=str(doc_id or ""),
                     sig_alg=form.cleaned_data["algorithm"],
+                    pqc_cert_serial=pqc_cert_serial,
                 )
                 _update_signed_document(doc_id, signed_relative_path, signature_result, request.session["user_id"])
             except Exception as e:
@@ -366,6 +451,44 @@ def sign_document_view(request, doc_id=None):
         request,
         "app/sign.html",
         {"form": form, "document": document_context, "title": "Ký tài liệu", "year": datetime.now().year},
+    )
+
+
+def verify_document_view(request):
+    verification_result = None
+
+    if request.method == "POST":
+        form = VerifySignatureForm(request.POST, request.FILES)
+        if form.is_valid():
+            pdf_path, _ = _save_uploaded_file(form.cleaned_data["pdf_file"], "verify_uploads")
+
+            try:
+                metadata = read_pqc_signature_metadata(pdf_path)
+                public_key_hex = metadata.get("signer_public_key") or _get_officer_public_key(metadata.get("signer_id"))
+                public_key_source = "XML metadata" if metadata.get("signer_public_key") else "MongoDB officer_keys"
+
+                verification_result = verify_pdf_signature(pdf_path, public_key_hex=public_key_hex)
+                verification_result["public_key_source"] = public_key_source if public_key_hex else ""
+                verification_result["signer_name"] = _get_user_display_name(verification_result.get("signer_id"))
+
+                if verification_result.get("is_valid"):
+                    messages.success(request, "Chu ky PQC hop le.")
+                else:
+                    messages.error(request, verification_result.get("error") or "Chu ky PQC khong hop le.")
+            except Exception as e:
+                messages.error(request, f"Kiem tra chu ky that bai: {e}")
+    else:
+        form = VerifySignatureForm()
+
+    return render(
+        request,
+        "app/verify.html",
+        {
+            "form": form,
+            "verification_result": verification_result,
+            "title": "Kiem tra chu ky",
+            "year": datetime.now().year,
+        },
     )
 
 

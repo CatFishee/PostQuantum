@@ -1,0 +1,88 @@
+{% extends "app/layout.html" %}
+
+{% block content %}
+<h2>{{ title }}</h2>
+
+{% if messages %}
+<div class="messages">
+    {% for message in messages %}
+    <div class="alert alert-{{ message.tags|default:'info' }}">{{ message }}</div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<form method="post" enctype="multipart/form-data" class="mt-3">
+    {% csrf_token %}
+    <div class="mb-3">
+        {{ form.pdf_file.label_tag }}
+        {{ form.pdf_file }}
+        <div class="form-text">Upload PDF da duoc nhung XML chu ky PQC trong metadata.</div>
+        {{ form.pdf_file.errors }}
+    </div>
+    <button type="submit" class="btn btn-primary">
+        <i class="fas fa-check-circle"></i> Kiem tra chu ky
+    </button>
+</form>
+
+{% if verification_result %}
+<hr>
+{% if verification_result.is_valid %}
+<div class="alert alert-success">
+    <strong>Hop le.</strong> documentHash khop va chu ky ML-DSA verify thanh cong.
+</div>
+{% else %}
+<div class="alert alert-danger">
+    <strong>Khong hop le.</strong>
+    {% if verification_result.error %}{{ verification_result.error }}{% endif %}
+</div>
+{% endif %}
+
+<table class="table table-bordered table-sm">
+    <tbody>
+        <tr>
+            <th>Nguoi ky</th>
+            <td>
+                {{ verification_result.signer_name|default:"-" }}
+                {% if verification_result.signer_id %}<code class="ms-2">{{ verification_result.signer_id }}</code>{% endif %}
+            </td>
+        </tr>
+        <tr>
+            <th>Thuat toan</th>
+            <td>{{ verification_result.algorithm }}</td>
+        </tr>
+        <tr>
+            <th>Hash function</th>
+            <td>{{ verification_result.hash_function }}</td>
+        </tr>
+        <tr>
+            <th>Thoi gian ky</th>
+            <td>{{ verification_result.signed_at|default:"-" }}</td>
+        </tr>
+        <tr>
+            <th>Public key source</th>
+            <td>{{ verification_result.public_key_source|default:"-" }}</td>
+        </tr>
+        <tr>
+            <th>Document hash embedded</th>
+            <td><code>{{ verification_result.document_hash }}</code></td>
+        </tr>
+        <tr>
+            <th>Document hash hien tai</th>
+            <td><code>{{ verification_result.actual_document_hash }}</code></td>
+        </tr>
+        <tr>
+            <th>Hash match</th>
+            <td>{{ verification_result.document_hash_matches }}</td>
+        </tr>
+        <tr>
+            <th>Signature valid</th>
+            <td>{{ verification_result.signature_valid }}</td>
+        </tr>
+        <tr>
+            <th>Cert serial</th>
+            <td>{{ verification_result.pqc_cert_serial|default:"-" }}</td>
+        </tr>
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}

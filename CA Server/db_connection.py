@@ -18,8 +18,8 @@ def get_db():
         
         # Kiểm tra thực tế
         client.admin.command('ping')
-        print("[+] Kết nối MongoDB Atlas (Cluster mới) thành công!")
+        print("[+] MongoDB Atlas connected.")
         return client['PQC_Admin_System']
     except Exception as e:
-        print(f"[-] Lỗi kết nối MongoDB: {e}")
+        print(f"[-] MongoDB connection error: {e}")
         return None

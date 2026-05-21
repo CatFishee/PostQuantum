@@ -1,0 +1,97 @@
+{% extends "app/layout.html" %}
+
+{% block content %}
+<h2>{{ title }}</h2>
+
+{% if messages %}
+<div class="messages">
+    {% for message in messages %}
+    <div class="alert alert-{{ message.tags|default:'info' }}">{{ message }}</div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if document %}
+<div class="alert alert-info">
+    <strong>Ho so:</strong> {{ document.id }}
+    {% if document.citizen_id %}<span class="ms-3"><strong>Nguoi dan:</strong> {{ document.citizen_id }}</span>{% endif %}
+    {% if document.status %}<span class="ms-3"><strong>Trang thai:</strong> {{ document.status }}</span>{% endif %}
+</div>
+{% endif %}
+
+<form method="post" enctype="multipart/form-data" class="mt-3">
+    {% csrf_token %}
+
+    <div class="mb-3">
+        {{ form.pdf_file.label_tag }}
+        {{ form.pdf_file }}
+        {{ form.pdf_file.errors }}
+    </div>
+
+    <div class="mb-3">
+        {{ form.key_file.label_tag }}
+        {{ form.key_file }}
+        <div class="form-text">Upload file JSON tai luc dang ky can bo, trong do co ml_dsa_priv.</div>
+        {{ form.key_file.errors }}
+    </div>
+
+    <div class="mb-3">
+        {{ form.public_key_hex.label_tag }}
+        {{ form.public_key_hex }}
+        <div class="form-text">{{ form.public_key_hex.help_text }}</div>
+        {{ form.public_key_hex.errors }}
+    </div>
+
+    <div class="mb-3">
+        {{ form.algorithm.label_tag }}
+        {{ form.algorithm }}
+        {{ form.algorithm.errors }}
+    </div>
+
+    <button type="submit" class="btn btn-primary">
+        <i class="fas fa-file-signature"></i> Ky PDF bang ML-DSA-65
+    </button>
+    <a href="{% url 'verify_document' %}" class="btn btn-outline-secondary ms-2">Kiem tra chu ky</a>
+</form>
+
+{% if signed_url %}
+<hr>
+<h4>PDF da ky</h4>
+<p>
+    <a class="btn btn-success" href="{{ signed_url }}" download>
+        <i class="fas fa-download"></i> Tai PDF da ky
+    </a>
+</p>
+
+{% if signature_result %}
+<table class="table table-bordered table-sm">
+    <tbody>
+        <tr>
+            <th>Signature ID</th>
+            <td>{{ signature_result.signature_id }}</td>
+        </tr>
+        <tr>
+            <th>Algorithm</th>
+            <td>{{ signature_result.algorithm }}</td>
+        </tr>
+        <tr>
+            <th>Hash function</th>
+            <td>{{ signature_result.hash_function }}</td>
+        </tr>
+        <tr>
+            <th>Document hash</th>
+            <td><code>{{ signature_result.document_hash }}</code></td>
+        </tr>
+        <tr>
+            <th>Signed at</th>
+            <td>{{ signature_result.signed_at }}</td>
+        </tr>
+        <tr>
+            <th>Cert serial</th>
+            <td>{{ signature_result.pqc_cert_serial|default:"-" }}</td>
+        </tr>
+    </tbody>
+</table>
+{% endif %}
+{% endif %}
+{% endblock %}

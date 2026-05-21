@@ -16,6 +16,7 @@ urlpatterns = [
     path("dashboard/", views.dashboard, name="dashboard"),
     path("sign/", views.sign_document_view, name="sign_document_manual"),
     path("sign/<str:doc_id>/", views.sign_document_view, name="sign_document"),
+    path("verify/", views.verify_document_view, name="verify_document"),
     path("logout/", LogoutView.as_view(next_page="/"), name="logout"),
     path("admin/", admin.site.urls),
 ]
