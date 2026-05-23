@@ -350,3 +350,123 @@ def verify_pdf_signature(pdf_path, public_key_hex=""):
         result["error"] = str(exc)
 
     return result
+
+def _bytes_from_mongo_binary(value):
+    """
+    Chuyen public key lay tu MongoDB ve dang bytes.
+
+    MongoDB co the luu key theo nhieu dang:
+    - bytes / bytearray
+    - Binary cua bson
+    - hex string
+    """
+    if value is None:
+        return b""
+
+    if isinstance(value, bytes):
+        return value
+
+    if isinstance(value, bytearray):
+        return bytes(value)
+
+    if isinstance(value, str):
+        text = "".join(value.split())
+        try:
+            return bytes.fromhex(text)
+        except ValueError:
+            return text.encode("utf-8")
+
+    try:
+        return bytes(value)
+    except Exception:
+        return b""
+
+
+def encrypt_pdf_with_ml_kem(input_pdf_path, output_encrypted_path, officer_ml_kem_public_key):
+    """
+    Ma hoa PDF theo huong post-quantum thuan o tang khoa cong khai.
+
+    - ML-KEM-768 dung de encapsulate shared secret cho can bo.
+    - AES-GCM dung de ma hoa noi dung PDF bang khoa phien sinh tu shared secret.
+    - Khong su dung RSA, ECC, ECDH, ECDSA hoac thuat toan khoa cong khai co dien.
+    """
+    public_key = _bytes_from_mongo_binary(officer_ml_kem_public_key)
+
+    if not public_key:
+        raise ValueError("Khong tim thay ML-KEM public key cua can bo.")
+
+    with open(input_pdf_path, "rb") as f:
+        plaintext = f.read()
+
+    with oqs.KeyEncapsulation("ML-KEM-768") as kem:
+        encapsulated_key, shared_secret = kem.encap_secret(public_key)
+
+    aes_key = shared_secret[:32]
+    aesgcm = AESGCM(aes_key)
+    nonce = os.urandom(12)
+
+    ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+
+    output_dir = os.path.dirname(output_encrypted_path)
+    os.makedirs(output_dir, exist_ok=True)
+
+    with open(output_encrypted_path, "wb") as f:
+        f.write(ciphertext)
+
+    return {
+        "ciphertext_path": output_encrypted_path,
+        "encapsulated_key": encapsulated_key,
+        "kems_variant": "ML-KEM-768",
+        "payload_cipher": "AES-256-GCM",
+        "nonce": nonce,
+    }
+
+def decrypt_pdf_with_ml_kem(
+    encrypted_pdf_path,
+    output_pdf_path,
+    encapsulated_key,
+    nonce,
+    officer_ml_kem_private_key,
+):
+    """
+    Giai ma PDF theo huong post-quantum o tang khoa cong khai.
+
+    - ML-KEM-768 dung de decapsulate shared secret bang private key cua can bo.
+    - AES-GCM dung de giai ma noi dung PDF bang khoa phien sinh tu shared secret.
+    - Khong su dung RSA, ECC, ECDH, ECDSA hoac thuat toan khoa cong khai co dien.
+    """
+    private_key = _bytes_from_mongo_binary(officer_ml_kem_private_key)
+    encapsulated_key_bytes = _bytes_from_mongo_binary(encapsulated_key)
+    nonce_bytes = _bytes_from_mongo_binary(nonce)
+
+    if not private_key:
+        raise ValueError("Khong tim thay ML-KEM private key cua can bo.")
+
+    if not encapsulated_key_bytes:
+        raise ValueError("Ho so khong co encapsulated_key.")
+
+    if not nonce_bytes:
+        raise ValueError("Ho so khong co nonce.")
+
+    with open(encrypted_pdf_path, "rb") as f:
+        ciphertext = f.read()
+
+    with oqs.KeyEncapsulation("ML-KEM-768", secret_key=private_key) as kem:
+        shared_secret = kem.decap_secret(encapsulated_key_bytes)
+
+    aes_key = shared_secret[:32]
+    aesgcm = AESGCM(aes_key)
+
+    plaintext = aesgcm.decrypt(nonce_bytes, ciphertext, None)
+
+    output_dir = os.path.dirname(output_pdf_path)
+    os.makedirs(output_dir, exist_ok=True)
+
+    with open(output_pdf_path, "wb") as f:
+        f.write(plaintext)
+
+    return {
+        "decrypted_path": output_pdf_path,
+        "kems_variant": "ML-KEM-768",
+        "payload_cipher": "AES-256-GCM",
+    }

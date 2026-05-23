@@ -16,13 +16,15 @@ from argon2.exceptions import VerifyMismatchError
 from .crypto_utils import (
     aes_gcm_decrypt,
     aes_gcm_encrypt,
+    decrypt_pdf_with_ml_kem,
+    encrypt_pdf_with_ml_kem,
     read_pqc_signature_metadata,
     sign_pdf_metadata,
     verify_pdf_signature,
     web_encapsulate,
 )
 from .db_connection import get_db
-from .forms import SignatureForm, VerifySignatureForm
+from .forms import SignatureForm, VerifySignatureForm, UploadPDFForm, DecryptApplicationForm
 
 try:
     from bson import ObjectId
@@ -163,13 +165,16 @@ def _update_signed_document(doc_id, signed_relative_path, signature_result, sign
 def _document_rows(raw_docs):
     rows = []
     for doc in raw_docs:
+        citizen_id = doc.get("citizen_id", doc.get("owner", ""))
+        officer_id = doc.get("assigned_officer_id", "")
+
         rows.append(
             {
                 "id": str(doc.get("_id", "")),
                 "status": doc.get("status", ""),
                 "created_at": doc.get("created_at", ""),
-                "assigned_officer_id": doc.get("assigned_officer_id", ""),
-                "citizen_id": doc.get("citizen_id", doc.get("owner", "")),
+                "assigned_officer_id": _get_user_display_name(officer_id) or str(officer_id),
+                "citizen_id": _get_user_display_name(citizen_id) or str(citizen_id),
             }
         )
     return rows
@@ -333,17 +338,41 @@ def dashboard(request):
         return redirect("login")
 
     docs = []
+
     if db is None:
         messages.warning(request, "Database chưa kết nối nên chưa tải được danh sách hồ sơ.")
+
     elif _is_officer_role(request.session.get("role")):
-        docs = list(db.applications.find({"status": {"$in": ["submitted", "Pending", "pending"]}}))
+        officer_id = request.session.get("user_id")
+
+        docs = list(db.applications.find({
+            "$or": [
+                {"assigned_officer_id": _to_mongo_id(officer_id)},
+                {"assigned_officer_id": officer_id},
+                {"assigned_officer_id": request.session.get("user")}
+            ]
+        }))
+
     else:
-        docs = list(db.applications.find({"citizen_id": request.session["user"]}))
+        user_id = request.session.get("user_id")
+        username = request.session.get("user")
+
+        docs = list(db.applications.find({
+            "$or": [
+                {"citizen_id": _to_mongo_id(user_id)},
+                {"citizen_id": user_id},
+                {"citizen_id": username}
+            ]
+        }))
 
     return render(
         request,
         "app/dashboard.html",
-        {"docs": _document_rows(docs), "title": "Dashboard", "year": datetime.now().year},
+        {
+            "docs": _document_rows(docs),
+            "title": "Dashboard",
+            "year": datetime.now().year
+        },
     )
 
 
@@ -453,6 +482,111 @@ def sign_document_view(request, doc_id=None):
         {"form": form, "document": document_context, "title": "Ký tài liệu", "year": datetime.now().year},
     )
 
+def decrypt_application_view(request, doc_id):
+    if not _is_officer_role(request.session.get("role")):
+        messages.error(request, "Chỉ tài khoản cán bộ mới được giải mã hồ sơ.")
+        return redirect("login")
+
+    document = _find_document(doc_id)
+    if not document:
+        messages.error(request, "Không tìm thấy hồ sơ cần giải mã.")
+        return redirect("dashboard")
+
+    assigned_officer_id = str(document.get("assigned_officer_id", ""))
+    current_officer_id = str(request.session.get("user_id", ""))
+
+    if assigned_officer_id != current_officer_id:
+        messages.error(request, "Hồ sơ này không được gán cho cán bộ hiện tại.")
+        return redirect("dashboard")
+
+    metadata = document.get("pqc_encryption_metadata") or {}
+    encrypted_relative_path = metadata.get("ciphertext_path", "")
+    encapsulated_key = metadata.get("encapsulated_key")
+    nonce = metadata.get("nonce")
+
+    if not encrypted_relative_path or not encapsulated_key or not nonce:
+        messages.error(request, "Hồ sơ chưa có đầy đủ metadata mã hóa.")
+        return redirect("dashboard")
+
+    if request.method == "POST":
+        form = DecryptApplicationForm(request.POST, request.FILES)
+
+        if form.is_valid():
+            key_file = form.cleaned_data["key_file"]
+
+            try:
+                key_data = key_file.read().decode("utf-8")
+                keys_dict = json.loads(key_data)
+
+                private_key_hex = (
+                    keys_dict.get("ml_kem_priv")
+                    or keys_dict.get("ml_kem_sk")
+                    or keys_dict.get("ml_kem_private_key")
+                    or ""
+                )
+
+                private_key_hex = "".join(str(private_key_hex or "").split())
+
+                if not private_key_hex:
+                    raise ValueError("File key không có ml_kem_priv.")
+
+                encrypted_path = os.path.join(settings.MEDIA_ROOT, encrypted_relative_path)
+
+                decrypted_dir = os.path.join(settings.MEDIA_ROOT, "decrypted_uploads")
+                os.makedirs(decrypted_dir, exist_ok=True)
+
+                output_name = f"{doc_id}_decrypted.pdf"
+                output_path = os.path.join(decrypted_dir, output_name)
+                decrypted_relative_path = f"decrypted_uploads/{output_name}".replace("\\", "/")
+
+                decrypt_pdf_with_ml_kem(
+                    encrypted_path,
+                    output_path,
+                    encapsulated_key,
+                    nonce,
+                    bytes.fromhex(private_key_hex),
+                )
+
+                db.applications.update_one(
+                    {"_id": _to_mongo_id(doc_id)},
+                    {
+                        "$set": {
+                            "pqc_encryption_metadata.decrypted_path": decrypted_relative_path,
+                            "pqc_encryption_metadata.decrypted_at": datetime.utcnow(),
+                        }
+                    },
+                )
+
+                decrypted_url = settings.MEDIA_URL + decrypted_relative_path
+
+                messages.success(request, "Giải mã hồ sơ thành công.")
+                return render(
+                    request,
+                    "app/decrypt_application.html",
+                    {
+                        "form": DecryptApplicationForm(),
+                        "document": _document_rows([document])[0],
+                        "decrypted_url": decrypted_url,
+                        "title": "Giải mã hồ sơ",
+                        "year": datetime.now().year,
+                    },
+                )
+
+            except Exception as e:
+                messages.error(request, f"Giải mã hồ sơ thất bại: {e}")
+    else:
+        form = DecryptApplicationForm()
+
+    return render(
+        request,
+        "app/decrypt_application.html",
+        {
+            "form": form,
+            "document": _document_rows([document])[0],
+            "title": "Giải mã hồ sơ",
+            "year": datetime.now().year,
+        },
+    )
 
 def verify_document_view(request):
     verification_result = None
@@ -491,6 +625,103 @@ def verify_document_view(request):
         },
     )
 
+def upload_pdf(request):
+    if "user" not in request.session:
+        messages.error(request, "Vui lòng đăng nhập trước khi upload hồ sơ.")
+        return redirect("login")
+
+    if db is None:
+        messages.error(request, "Database chưa kết nối, không thể upload hồ sơ.")
+        return redirect("dashboard")
+
+    officers = list(db.users.find({
+        "role": "officer",
+        "pqc_status": "active"
+    }))
+
+    if request.method == "POST":
+        form = UploadPDFForm(request.POST, request.FILES, officers=officers)
+
+        if form.is_valid():
+            pdf_file = form.cleaned_data["pdf_file"]
+            officer_id = form.cleaned_data["officer_id"]
+
+            officer_key = _get_officer_key_doc(officer_id)
+            if not officer_key or not officer_key.get("ml_kem_pk"):
+                messages.error(request, "Cán bộ được chọn chưa có ML-KEM public key hợp lệ.")
+                return render(
+                    request,
+                    "app/upload_pdf.html",
+                    {
+                        "form": form,
+                        "title": "Upload hồ sơ PDF",
+                        "year": datetime.now().year
+                    },
+                )
+
+            pdf_path, pdf_relative_path = _save_uploaded_file(pdf_file, "uploaded_pdfs")
+
+            encrypted_dir = os.path.join(settings.MEDIA_ROOT, "encrypted_uploads")
+            os.makedirs(encrypted_dir, exist_ok=True)
+
+            encrypted_file_name = f"{uuid.uuid4().hex}.enc"
+            encrypted_path = os.path.join(encrypted_dir, encrypted_file_name)
+            encrypted_relative_path = f"encrypted_uploads/{encrypted_file_name}".replace("\\", "/")
+
+            try:
+                encryption_result = encrypt_pdf_with_ml_kem(
+                    pdf_path,
+                    encrypted_path,
+                    officer_key["ml_kem_pk"]
+                )
+            except Exception as e:
+                messages.error(request, f"Mã hóa PDF thất bại: {e}")
+                return render(
+                    request,
+                    "app/upload_pdf.html",
+                    {
+                        "form": form,
+                        "title": "Upload hồ sơ PDF",
+                        "year": datetime.now().year
+                    },
+                )
+
+            application_doc = {
+                "citizen_id": _to_mongo_id(request.session.get("user_id")),
+                "assigned_officer_id": _to_mongo_id(officer_id),
+                "status": "submitted",
+                "pqc_encryption_metadata": {
+                    "ciphertext_path": encrypted_relative_path,
+                    "original_upload_path": pdf_relative_path,
+                    "encapsulated_key": encryption_result["encapsulated_key"],
+                    "kems_variant": encryption_result["kems_variant"],
+                    "payload_cipher": encryption_result["payload_cipher"],
+                    "nonce": encryption_result["nonce"],
+                    "classical_public_key_algorithm": None
+                },
+                "result_document": {
+                    "signed_ciphertext_path": None,
+                    "pqc_signature_id": None
+                },
+                "created_at": datetime.utcnow()
+            }
+
+            db.applications.insert_one(application_doc)
+
+            messages.success(request, "Upload và mã hóa hồ sơ PDF thành công.")
+            return redirect("dashboard")
+    else:
+        form = UploadPDFForm(officers=officers)
+
+    return render(
+        request,
+        "app/upload_pdf.html",
+        {
+            "form": form,
+            "title": "Upload hồ sơ PDF",
+            "year": datetime.now().year
+        },
+    )
 
 def contact(request):
     return render(request, "app/contact.html", {"title": "Liên hệ", "year": datetime.now().year})

@@ -1,7 +1,15 @@
 {% extends "app/layout.html" %}
 
 {% block content %}
-<h2>{{ title }}</h2>
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0">{{ title }}</h2>
+
+    {% if request.session.role|lower == "citizen" %}
+    <a class="btn btn-primary" href="{% url 'upload_pdf' %}">
+        Upload hồ sơ PDF
+    </a>
+    {% endif %}
+</div>
 
 {% if messages %}
 <div class="messages">
@@ -35,11 +43,16 @@
             <td>{{ doc.assigned_officer_id }}</td>
             <td>{{ doc.status }}</td>
             <td>
-                {% if request.session.role|lower == "officer" %}
-                <a class="btn btn-xs btn-primary" href="{% url 'sign_document' doc.id %}">Ký</a>
-                {% else %}
-                <span class="text-muted">-</span>
-                {% endif %}
+                 {% if request.session.role|lower == "officer" %}
+                 <a class="btn btn-sm btn-warning" href="{% url 'decrypt_application' doc.id %}">
+                 Giải mã
+                 </a>
+                 <a class="btn btn-sm btn-primary" href="{% url 'sign_document' doc.id %}">
+                 Ký
+                 </a>
+                 {% else %}
+                 <span class="text-muted">-</span>
+                 {% endif %}
             </td>
         </tr>
         {% empty %}

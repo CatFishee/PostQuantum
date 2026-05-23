@@ -71,3 +71,50 @@ class BootstrapAuthenticationForm(AuthenticationForm):
         label=_("Password"),
         widget=forms.PasswordInput({"class": "form-control", "placeholder": "Password"}),
     )
+
+class UploadPDFForm(forms.Form):
+    """Form nguoi dan upload PDF ho so hanh chinh."""
+
+    pdf_file = forms.FileField(
+        label="File PDF hồ sơ",
+        widget=forms.ClearableFileInput(
+            attrs={"class": "form-control", "accept": "application/pdf,.pdf"}
+        ),
+    )
+
+    officer_id = forms.ChoiceField(
+        label="Cán bộ xử lý",
+        choices=(),
+        widget=forms.Select(attrs={"class": "form-control"}),
+    )
+
+    def __init__(self, *args, officers=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        officers = officers or []
+        self.fields["officer_id"].choices = [
+            (str(officer.get("_id")), officer.get("full_name") or officer.get("username"))
+            for officer in officers
+        ]
+
+    def clean_pdf_file(self):
+        pdf_file = self.cleaned_data["pdf_file"]
+        if not pdf_file.name.lower().endswith(".pdf"):
+            raise forms.ValidationError("Chỉ nhận file PDF.")
+        return pdf_file
+
+class DecryptApplicationForm(forms.Form):
+    """Form can bo upload file key JSON de giai ma ho so."""
+
+    key_file = forms.FileField(
+        label="File key JSON của cán bộ",
+        widget=forms.ClearableFileInput(
+            attrs={"class": "form-control", "accept": ".json,.pqc,.key,.txt"}
+        ),
+    )
+
+    def clean_key_file(self):
+        key_file = self.cleaned_data["key_file"]
+        allowed_suffixes = (".json", ".pqc", ".key", ".txt")
+        if not key_file.name.lower().endswith(allowed_suffixes):
+            raise forms.ValidationError("File khóa nên là .json, .pqc, .key hoặc .txt.")
+        return key_file
