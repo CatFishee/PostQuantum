@@ -51,8 +51,18 @@
                  Ký
                  </a>
                  {% else %}
-                 <span class="text-muted">-</span>
+                 {% if doc.signed_file_path %}
+                     <a class="btn btn-sm btn-success" href="/media/{{ doc.signed_file_path }}" target="_blank">
+                         Tải file đã ký
+                    </a>
+                 {% elif doc.submission_type == "signed" and doc.original_upload_path %}
+                     <a class="btn btn-sm btn-success" href="/media/{{ doc.original_upload_path }}" target="_blank">
+                         Tải file đã ký
+                     </a>
+                 {% else %}
+                     <span class="text-muted">Chưa có kết quả</span>
                  {% endif %}
+             {% endif %}
             </td>
         </tr>
         {% empty %}

@@ -18,6 +18,14 @@
             {% csrf_token %}
 
             <div class="mb-3">
+                 <label class="form-label">{{ form.upload_type.label }}</label>
+                 {{ form.upload_type }}
+                 {% for error in form.upload_type.errors %}
+                    <div class="text-danger">{{ error }}</div>
+                 {% endfor %}
+            </div>
+
+            <div class="mb-3">
                 <label class="form-label">{{ form.pdf_file.label }}</label>
                 {{ form.pdf_file }}
                 {% for error in form.pdf_file.errors %}

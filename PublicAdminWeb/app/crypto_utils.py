@@ -3,6 +3,9 @@ import hashlib
 import os
 import sys
 import uuid
+import base64
+import requests
+
 from xml.etree import ElementTree
 
 _OQS_DLL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -469,4 +472,122 @@ def decrypt_pdf_with_ml_kem(
         "decrypted_path": output_pdf_path,
         "kems_variant": "ML-KEM-768",
         "payload_cipher": "AES-256-GCM",
+    }
+
+CA_BASE_URL = "http://127.0.0.1:5001"
+
+
+def _to_base64(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        try:
+            return base64.b64encode(bytes.fromhex(value)).decode("utf-8")
+        except Exception:
+            return base64.b64encode(value.encode("utf-8")).decode("utf-8")
+
+    return base64.b64encode(bytes(value)).decode("utf-8")
+
+
+def ca_encrypt_pdf(pdf_path, officer_id):
+    with open(pdf_path, "rb") as pdf_f:
+        files = {
+            "pdf_file": (os.path.basename(pdf_path), pdf_f, "application/pdf")
+        }
+        data = {
+            "officer_id": str(officer_id)
+        }
+
+        response = requests.post(
+            f"{CA_BASE_URL}/encrypt-pdf",
+            files=files,
+            data=data,
+            timeout=60,
+        )
+
+    response.raise_for_status()
+    result = response.json()
+
+    return {
+        "ciphertext": base64.b64decode(result["ciphertext_b64"]),
+        "encapsulated_key": base64.b64decode(result["encapsulated_key_b64"]),
+        "nonce": base64.b64decode(result["nonce_b64"]),
+        "kems_variant": result.get("kems_variant", "ML-KEM-768"),
+        "payload_cipher": result.get("payload_cipher", "AES-256-GCM"),
+        "classical_public_key_algorithm": result.get("classical_public_key_algorithm"),
+    }
+
+
+def ca_decrypt_pdf(encrypted_path, key_file_path, encapsulated_key, nonce):
+    with open(encrypted_path, "rb") as enc_f, open(key_file_path, "rb") as key_f:
+        files = {
+            "encrypted_file": (os.path.basename(encrypted_path), enc_f, "application/octet-stream"),
+            "key_file": (os.path.basename(key_file_path), key_f, "application/json"),
+        }
+        data = {
+            "encapsulated_key_b64": _to_base64(encapsulated_key),
+            "nonce_b64": _to_base64(nonce),
+        }
+
+        response = requests.post(
+            f"{CA_BASE_URL}/decrypt-pdf",
+            files=files,
+            data=data,
+            timeout=60,
+        )
+
+    response.raise_for_status()
+    return response.content
+
+
+def ca_verify_pdf(pdf_path):
+    with open(pdf_path, "rb") as pdf_f:
+        files = {
+            "pdf_file": (os.path.basename(pdf_path), pdf_f, "application/pdf")
+        }
+
+        response = requests.post(
+            f"{CA_BASE_URL}/verify-pdf",
+            files=files,
+            timeout=60,
+        )
+
+    response.raise_for_status()
+    return response.json()
+
+
+def ca_sign_pdf(
+    pdf_path,
+    key_file_path,
+    doc_id="",
+    signer_id="",
+    public_key_hex="",
+    pqc_cert_serial="",
+):
+    with open(pdf_path, "rb") as pdf_f, open(key_file_path, "rb") as key_f:
+        files = {
+            "pdf_file": (os.path.basename(pdf_path), pdf_f, "application/pdf"),
+            "key_file": (os.path.basename(key_file_path), key_f, "application/json"),
+        }
+        data = {
+            "doc_id": str(doc_id or ""),
+            "signer_id": str(signer_id or ""),
+            "public_key_hex": public_key_hex or "",
+            "pqc_cert_serial": pqc_cert_serial or "",
+        }
+
+        response = requests.post(
+            f"{CA_BASE_URL}/sign-pdf",
+            files=files,
+            data=data,
+            timeout=60,
+        )
+
+    response.raise_for_status()
+    result = response.json()
+
+    return {
+        "signed_pdf": base64.b64decode(result["signed_pdf_b64"]),
+        "signature_result": result["signature_result"],
     }

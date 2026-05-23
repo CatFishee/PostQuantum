@@ -74,6 +74,15 @@ class BootstrapAuthenticationForm(AuthenticationForm):
 
 class UploadPDFForm(forms.Form):
     """Form nguoi dan upload PDF ho so hanh chinh."""
+    upload_type = forms.ChoiceField(
+    label="Loại hồ sơ upload",
+    choices=(
+        ("unsigned", "File chưa ký - gửi cán bộ xử lý/ký"),
+        ("signed", "File đã ký - kiểm tra chữ ký và lưu hồ sơ"),
+    ),
+    initial="unsigned",
+    widget=forms.Select(attrs={"class": "form-control"}),
+)
 
     pdf_file = forms.FileField(
         label="File PDF hồ sơ",
