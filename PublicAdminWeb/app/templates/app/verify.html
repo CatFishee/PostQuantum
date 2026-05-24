@@ -16,11 +16,11 @@
     <div class="mb-3">
         {{ form.pdf_file.label_tag }}
         {{ form.pdf_file }}
-        <div class="form-text">Upload PDF da duoc nhung XML chu ky PQC trong metadata.</div>
+        <div class="form-text">Upload PDF đã được nhúng XML chữ ký PQC trong metadata.</div>
         {{ form.pdf_file.errors }}
     </div>
     <button type="submit" class="btn btn-primary">
-        <i class="fas fa-check-circle"></i> Kiem tra chu ky
+        <i class="fas fa-check-circle"></i> Kiểm tra chữ ký
     </button>
 </form>
 
@@ -28,11 +28,11 @@
 <hr>
 {% if verification_result.is_valid %}
 <div class="alert alert-success">
-    <strong>Hop le.</strong> documentHash khop va chu ky ML-DSA verify thanh cong.
+    <strong>Hợp lệ.</strong> documentHash khớp và chữ ký ML-DSA verify thành công.
 </div>
 {% else %}
 <div class="alert alert-danger">
-    <strong>Khong hop le.</strong>
+    <strong>Không hợp lệ.</strong>
     {% if verification_result.error %}{{ verification_result.error }}{% endif %}
 </div>
 {% endif %}
@@ -40,14 +40,14 @@
 <table class="table table-bordered table-sm">
     <tbody>
         <tr>
-            <th>Nguoi ky</th>
+            <th>Nguời ký</th>
             <td>
                 {{ verification_result.signer_name|default:"-" }}
                 {% if verification_result.signer_id %}<code class="ms-2">{{ verification_result.signer_id }}</code>{% endif %}
             </td>
         </tr>
         <tr>
-            <th>Thuat toan</th>
+            <th>Thuật toán</th>
             <td>{{ verification_result.algorithm }}</td>
         </tr>
         <tr>
@@ -55,7 +55,7 @@
             <td>{{ verification_result.hash_function }}</td>
         </tr>
         <tr>
-            <th>Thoi gian ky</th>
+            <th>Thời gian ký</th>
             <td>{{ verification_result.signed_at|default:"-" }}</td>
         </tr>
         <tr>
@@ -67,7 +67,7 @@
             <td><code>{{ verification_result.document_hash }}</code></td>
         </tr>
         <tr>
-            <th>Document hash hien tai</th>
+            <th>Document hash hiện tại</th>
             <td><code>{{ verification_result.actual_document_hash }}</code></td>
         </tr>
         <tr>

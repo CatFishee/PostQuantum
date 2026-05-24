@@ -32,7 +32,7 @@ _PDF_HASH_SKIP_KEYS = {
 }
 
 
-# --- Hashing: SHAKE-256 theo dung chuan do an ---
+# --- Hashing: SHAKE-256 ---
 def get_shake_256_hash(data: bytes, length: int = PDF_HASH_LENGTH):
     return hashlib.shake_256(data).digest(length)
 
@@ -282,7 +282,7 @@ def _xml_local_name(tag):
 
 def parse_pqc_signature_xml(xml_text):
     if not xml_text:
-        raise ValueError("PDF khong co metadata chu ky PQC.")
+        raise ValueError("PDF không có metadata chữ ký PQC.")
 
     root = ElementTree.fromstring(xml_text)
     field_map = {
@@ -330,13 +330,13 @@ def verify_pdf_signature(pdf_path, public_key_hex=""):
     }
 
     if not expected_hash:
-        result["error"] = "Metadata khong co documentHash."
+        result["error"] = "Metadata không có documentHash."
         return result
     if not result["document_hash_matches"]:
-        result["error"] = "documentHash khong khop voi noi dung PDF hien tai."
+        result["error"] = "documentHash không khớp với nội dung PDF hiện tại."
         return result
     if not public_key_hex:
-        result["error"] = "Khong tim thay public key ML-DSA de verify."
+        result["error"] = "Không tìm thấy public key ML-DSA để verify."
         return result
 
     try:
@@ -396,7 +396,7 @@ def encrypt_pdf_with_ml_kem(input_pdf_path, output_encrypted_path, officer_ml_ke
     public_key = _bytes_from_mongo_binary(officer_ml_kem_public_key)
 
     if not public_key:
-        raise ValueError("Khong tim thay ML-KEM public key cua can bo.")
+        raise ValueError("Không tìm thấy ML-KEM public key của cán bộ.")
 
     with open(input_pdf_path, "rb") as f:
         plaintext = f.read()
@@ -443,13 +443,13 @@ def decrypt_pdf_with_ml_kem(
     nonce_bytes = _bytes_from_mongo_binary(nonce)
 
     if not private_key:
-        raise ValueError("Khong tim thay ML-KEM private key cua can bo.")
+        raise ValueError("Không tìm thấy ML-KEM private key của cán bộ.")
 
     if not encapsulated_key_bytes:
-        raise ValueError("Ho so khong co encapsulated_key.")
+        raise ValueError("Hồ sơ không có encapsulated_key.")
 
     if not nonce_bytes:
-        raise ValueError("Ho so khong co nonce.")
+        raise ValueError("Hồ sơ không có nonce.")
 
     with open(encrypted_pdf_path, "rb") as f:
         ciphertext = f.read()

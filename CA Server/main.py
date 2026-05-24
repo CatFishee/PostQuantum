@@ -186,7 +186,7 @@ async def encrypt_pdf(
         })
 
         if not officer_key or not officer_key.get("ml_kem_pk"):
-            raise HTTPException(status_code=404, detail="Can bo chua co ML-KEM public key active.")
+            raise HTTPException(status_code=404, detail="Cán bộ chưa có ML-KEM public key active.")
 
         pdf_bytes = await pdf_file.read()
 
@@ -234,7 +234,7 @@ async def decrypt_pdf(
         )
 
         if not ml_kem_priv:
-            raise HTTPException(status_code=400, detail="File key JSON khong co ml_kem_priv.")
+            raise HTTPException(status_code=400, detail="File key JSON không có ml_kem_priv.")
 
         plaintext_pdf = decrypt_pdf_bytes_with_ml_kem(
             ciphertext,
@@ -293,7 +293,7 @@ async def sign_pdf(
         )
 
         if not ml_dsa_priv:
-            raise HTTPException(status_code=400, detail="File key JSON khong co ml_dsa_priv.")
+            raise HTTPException(status_code=400, detail="File key JSON không có ml_dsa_priv.")
 
         temp_input = os.path.join(current_dir, f"tmp_{uuid.uuid4().hex}.pdf")
         temp_output = os.path.join(current_dir, f"tmp_signed_{uuid.uuid4().hex}.pdf")

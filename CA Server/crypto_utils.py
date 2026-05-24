@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pikepdf import Pdf
 
 
-# --- Hashing: Chuyển sang SHAKE-256 theo đúng chuẩn Đồ án ---
+# --- Hashing: Chuyển sang SHAKE-256 ---
 def get_shake_256_hash(data: bytes, length: int = 32):
     return hashlib.shake_256(data).digest(length)
 
@@ -283,11 +283,11 @@ def decrypt_pdf_bytes_with_ml_kem(ciphertext: bytes, encapsulated_key, nonce, of
     nonce_bytes = _bytes_from_value(nonce)
 
     if not private_key:
-        raise ValueError("Khong tim thay ML-KEM private key cua can bo.")
+        raise ValueError("Không tìm thấy ML-KEM private key của cán bộ.")
     if not encapsulated_key_bytes:
-        raise ValueError("Thieu encapsulated_key.")
+        raise ValueError("Thiếu encapsulated_key.")
     if not nonce_bytes:
-        raise ValueError("Thieu nonce.")
+        raise ValueError("Thiếu nonce.")
 
     with oqs.KeyEncapsulation("ML-KEM-768", secret_key=private_key) as kem:
         shared_secret = kem.decap_secret(encapsulated_key_bytes)
@@ -318,7 +318,7 @@ def extract_pqc_signature_xml(pdf_path):
 
 def parse_pqc_signature_xml(xml_text):
     if not xml_text:
-        raise ValueError("PDF khong co metadata chu ky PQC.")
+        raise ValueError("PDF không có metadata chữ ký PQC.")
 
     root = ElementTree.fromstring(xml_text)
     values = {}
@@ -412,7 +412,7 @@ def verify_pdf_signature_metadata(pdf_path):
             "cert_serial": cert_serial,
             "pqc_cert_serial": cert_serial,
             "metadata": metadata,
-            "error": "" if is_valid else "Chu ky hoac documentHash khong hop le.",
+            "error": "" if is_valid else "Chữ ký hoặc documentHash không hợp lệ.",
         }
 
     except Exception as exc:

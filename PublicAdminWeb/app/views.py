@@ -21,11 +21,6 @@ from .crypto_utils import (
     ca_verify_pdf,
     aes_gcm_decrypt,
     aes_gcm_encrypt,
-    decrypt_pdf_with_ml_kem,
-    encrypt_pdf_with_ml_kem,
-    read_pqc_signature_metadata,
-    sign_pdf_metadata,
-    verify_pdf_signature,
     web_encapsulate,
 )
 from .db_connection import get_db
@@ -138,7 +133,7 @@ def _update_signed_document(doc_id, signed_relative_path, signature_result, sign
     if db is None or not doc_id:
         return
 
-    # 1. Lưu vào collection `signatures` (theo chuẩn PDF)
+    # 1. Lưu vào collection `signatures` 
     sig_doc = {
         "doc_id": _to_mongo_id(doc_id),
         "signer_id": _to_mongo_id(signer_id),
@@ -302,7 +297,7 @@ def download_key(request):
         messages.warning(request, "Không tìm thấy khóa hoặc khóa đã được tải. Vui lòng đăng nhập.")
         return redirect("login")
     
-    # Định dạng chuỗi JSON đẹp mắt để tải về dưới dạng file .json
+    # Định dạng chuỗi JSON để tải về dưới dạng file .json
     keys_json_str = json.dumps(priv_keys, indent=4)
         
     return render(request, "app/download_key.html", {

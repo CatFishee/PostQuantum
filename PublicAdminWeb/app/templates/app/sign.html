@@ -13,9 +13,9 @@
 
 {% if document %}
 <div class="alert alert-info">
-    <strong>Ho so:</strong> {{ document.id }}
-    {% if document.citizen_id %}<span class="ms-3"><strong>Nguoi dan:</strong> {{ document.citizen_id }}</span>{% endif %}
-    {% if document.status %}<span class="ms-3"><strong>Trang thai:</strong> {{ document.status }}</span>{% endif %}
+    <strong>Hồ sơ:</strong> {{ document.id }}
+    {% if document.citizen_id %}<span class="ms-3"><strong>Nguời dân:</strong> {{ document.citizen_id }}</span>{% endif %}
+    {% if document.status %}<span class="ms-3"><strong>Trạng thái:</strong> {{ document.status }}</span>{% endif %}
 </div>
 {% endif %}
 
@@ -31,7 +31,7 @@
     <div class="mb-3">
         {{ form.key_file.label_tag }}
         {{ form.key_file }}
-        <div class="form-text">Upload file JSON tai luc dang ky can bo, trong do co ml_dsa_priv.</div>
+        <div class="form-text">Upload file JSON tải lúc đăng ký cán bộ, trong đó có ml_dsa_priv.</div>
         {{ form.key_file.errors }}
     </div>
 
@@ -49,17 +49,17 @@
     </div>
 
     <button type="submit" class="btn btn-primary">
-        <i class="fas fa-file-signature"></i> Ky PDF bang ML-DSA-65
+        <i class="fas fa-file-signature"></i> Ký PDF bằng ML-DSA-65
     </button>
-    <a href="{% url 'verify_document' %}" class="btn btn-outline-secondary ms-2">Kiem tra chu ky</a>
+    <a href="{% url 'verify_document' %}" class="btn btn-outline-secondary ms-2">Kiểm tra chữ ký</a>
 </form>
 
 {% if signed_url %}
 <hr>
-<h4>PDF da ky</h4>
+<h4>PDF đã ký</h4>
 <p>
     <a class="btn btn-success" href="{{ signed_url }}" download>
-        <i class="fas fa-download"></i> Tai PDF da ky
+        <i class="fas fa-download"></i> Tải PDF đã ký
     </a>
 </p>
 
