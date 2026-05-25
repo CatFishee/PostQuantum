@@ -15,7 +15,12 @@ urlpatterns = [
     path("download-key/", views.download_key, name="download_key"),
     path("dashboard/", views.dashboard, name="dashboard"),
     path("upload/", views.upload_pdf, name="upload_pdf"),
+    
     path("decrypt/<str:doc_id>/", views.decrypt_application_view, name="decrypt_application"),
+    
+    
+    path("media/download/signed/<str:doc_id>/", views.download_signed_pdf, name="download_signed_pdf"),
+    
     path("sign/", views.sign_document_view, name="sign_document_manual"),
     path("sign/<str:doc_id>/", views.sign_document_view, name="sign_document"),
     path("verify/", views.verify_document_view, name="verify_document"),
