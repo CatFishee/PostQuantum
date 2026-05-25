@@ -372,9 +372,18 @@ def dashboard(request):
     )
 
 @officer_ip_required
-def sign_document_view(request, doc_id=None):
+def sign_document_view(request, doc_id):
     document = _find_document(doc_id)
-    document_context = _document_rows([document])[0] if document else None
+    if not document:
+        messages.error(request, "Không tìm thấy hồ sơ!")
+        return redirect("dashboard")
+        
+    if document.get("status") == "processed":
+        messages.error(request, "Hồ sơ này đã được ký số và hoàn tất, không thể ký đè lại!")
+        return redirect("dashboard")
+        
+    document_context = _document_rows([document])[0]
+    
     if request.method == "POST":
         form = SignatureForm(request.POST, request.FILES)
         if form.is_valid():
@@ -410,12 +419,7 @@ def sign_document_view(request, doc_id=None):
                 return render(
                     request,
                     "app/sign.html",
-                    {
-                        "form": form,
-                        "document": document_context,
-                        "title": "Ký tài liệu",
-                        "year": datetime.now().year,
-                    },
+                    {"form": form, "document": document_context, "title": "Ký tài liệu", "year": datetime.now().year},
                 )
             public_key_hex = (
                 form.cleaned_data["public_key_hex"].strip()
@@ -434,46 +438,43 @@ def sign_document_view(request, doc_id=None):
                 ca_result = ca_sign_pdf(
                     pdf_path,
                     temp_key_path,
-                    doc_id=str(doc_id or ""),
+                    doc_id=str(doc_id),
                     signer_id=str(request.session.get("user_id") or ""),
                     public_key_hex=public_key_hex,
                     pqc_cert_serial=pqc_cert_serial,
                 )
-                if doc_id:
-                    output_dir = os.path.join(settings.MEDIA_ROOT, "signed_documents")
-                    os.makedirs(output_dir, exist_ok=True)
-                    base_name = os.path.splitext(os.path.basename(pdf_relative_path))[0]
-                    output_name = f"{base_name}_signed.enc"
-                    output_path = os.path.join(output_dir, output_name)
-                    signed_relative_path = f"signed_documents/{output_name}".replace("\\", "/")
-                    encrypt_bytes_to_file_at_rest(ca_result["signed_pdf"], output_path)
-                    _update_signed_document(
-                        doc_id,
-                        signed_relative_path,
-                        ca_result["signature_result"],
-                        request.session["user_id"]
-                    )
-                    signed_url = reverse("download_signed_pdf", args=[doc_id])
-                else:
-                    temp_uuid = uuid.uuid4().hex
-                    temp_signed_dir = os.path.join(settings.MEDIA_ROOT, "temp_signed")
-                    os.makedirs(temp_signed_dir, exist_ok=True)
-                    output_name = f"{temp_uuid}_signed.enc"
-                    output_path = os.path.join(temp_signed_dir, output_name)
-                    encrypt_bytes_to_file_at_rest(ca_result["signed_pdf"], output_path)
-                    signed_url = reverse("download_signed_pdf", args=[temp_uuid])
+                output_dir = os.path.join(settings.MEDIA_ROOT, "signed_documents")
+                os.makedirs(output_dir, exist_ok=True)
+                base_name = os.path.splitext(os.path.basename(pdf_relative_path))[0]
+                output_name = f"{base_name}_signed.enc"
+                output_path = os.path.join(output_dir, output_name)
+                signed_relative_path = f"signed_documents/{output_name}".replace("\\", "/")
+                
+                encrypt_bytes_to_file_at_rest(ca_result["signed_pdf"], output_path)
+                _update_signed_document(
+                    doc_id,
+                    signed_relative_path,
+                    ca_result["signature_result"],
+                    request.session["user_id"]
+                )
+                signed_url = reverse("download_signed_pdf", args=[doc_id])
                 signature_result = ca_result["signature_result"]
-            except Exception as e:
-                messages.error(request, f"Ký tài liệu thất bại: {e}")
+                messages.success(request, "Đã ký PDF bằng chữ ký số hậu lượng tử (ML-DSA) và mã hóa an toàn tại chỗ.")
                 return render(
                     request,
                     "app/sign.html",
-                    {
-                        "form": form,
-                        "document": document_context,
-                        "title": "Ký tài liệu",
-                        "year": datetime.now().year,
-                    },
+                    {"form": SignatureForm(), "document": document_context, "signed_url": signed_url, "signature_result": signature_result, "title": "Ký tài liệu", "year": datetime.now().year},
+                )
+            except Exception as e:
+                error_msg = str(e)
+                if "403" in error_msg:
+                    messages.error(request, "Hệ thống PKI từ chối: Chứng thư số của đồng chí đã hết hạn hoặc bị thu hồi!")
+                else:
+                    messages.error(request, f"Ký tài liệu thất bại: {error_msg}")
+                return render(
+                    request,
+                    "app/sign.html",
+                    {"form": form, "document": document_context, "title": "Ký tài liệu", "year": datetime.now().year},
                 )
             finally:
                 for path in (temp_key_path, pdf_path):
@@ -482,30 +483,12 @@ def sign_document_view(request, doc_id=None):
                             os.remove(path)
                     except Exception:
                         pass
-            messages.success(request, "Đã ký PDF bằng chữ ký số hậu lượng tử (ML-DSA) và mã hóa an toàn tại chỗ.")
-            return render(
-                request,
-                "app/sign.html",
-                {
-                    "form": SignatureForm(),
-                    "document": document_context,
-                    "signed_url": signed_url,
-                    "signature_result": signature_result,
-                    "title": "Ký tài liệu",
-                    "year": datetime.now().year,
-                },
-            )
     else:
         form = SignatureForm()
     return render(
         request,
         "app/sign.html",
-        {
-            "form": form,
-            "document": document_context,
-            "title": "Ký tài liệu",
-            "year": datetime.now().year,
-        },
+        {"form": form, "document": document_context, "title": "Ký tài liệu", "year": datetime.now().year},
     )
 
 @officer_ip_required
@@ -560,12 +543,7 @@ def decrypt_application_view(request, doc_id):
     return render(
         request,
         "app/decrypt_application.html",
-        {
-            "form": form,
-            "document": _document_rows([document])[0],
-            "title": "Giải mã hồ sơ",
-            "year": datetime.now().year,
-        },
+        {"form": form, "document": _document_rows([document])[0], "title": "Giải mã hồ sơ", "year": datetime.now().year},
     )
 
 def download_signed_pdf(request, doc_id):
@@ -573,21 +551,8 @@ def download_signed_pdf(request, doc_id):
         return redirect("login")
     document = _find_document(doc_id)
     if not document:
-        temp_path = os.path.join(settings.MEDIA_ROOT, "temp_signed", f"{doc_id}_signed.enc")
-        if os.path.exists(temp_path):
-            if not _is_officer_role(request.session.get("role")):
-                return HttpResponseForbidden("Forbidden: Bạn không có quyền truy cập file này.")
-            client_ip = get_client_ip(request)
-            if not is_internal_ip(client_ip):
-                return HttpResponseForbidden(f"Forbidden: Cán bộ không được phép truy cập từ IP {client_ip} ngoài mạng nội bộ.")
-            try:
-                pdf_plaintext_bytes = decrypt_file_at_rest_bytes(temp_path)
-                response = HttpResponse(pdf_plaintext_bytes, content_type="application/pdf")
-                response["Content-Disposition"] = "attachment; filename=signed_document.pdf"
-                return response
-            except Exception as e:
-                raise Http404(f"Không thể giải mã file tạm: {e}")
-        raise Http404("Hồ sơ không tồn tại.")
+        raise Http404("Hồ sơ không tồn tại hoặc đã bị xóa.")
+
     user_id = str(request.session.get("user_id", ""))
     user_role = str(request.session.get("role", "")).lower()
     citizen_id = str(document.get("citizen_id", ""))
@@ -601,6 +566,7 @@ def download_signed_pdf(request, doc_id):
     else:
         if citizen_id != user_id:
             return HttpResponseForbidden("Forbidden: Bạn không có quyền truy cập hồ sơ này.")
+            
     result_document = document.get("result_document") or {}
     signed_ciphertext_path = result_document.get("signed_ciphertext_path", "")
     if not signed_ciphertext_path:
@@ -614,7 +580,7 @@ def download_signed_pdf(request, doc_id):
         response["Content-Disposition"] = f"attachment; filename=signed_{doc_id}.pdf"
         return response
     except Exception as e:
-        messages.error(request, f"Giải mã và tải tệp lỗi: {e}")
+        messages.error(request, f"Giải mã cục bộ và tải tệp lỗi: {e}")
         return redirect("dashboard")
 
 def verify_document_view(request):
@@ -622,73 +588,26 @@ def verify_document_view(request):
     if request.method == "POST":
         form = VerifySignatureForm(request.POST, request.FILES)
         if form.is_valid():
-            pdf_path, _ = _save_uploaded_file(
-                form.cleaned_data["pdf_file"],
-                "verify_uploads"
-            )
+            pdf_path, _ = _save_uploaded_file(form.cleaned_data["pdf_file"], "verify_uploads")
             try:
                 verification_result = ca_verify_pdf(pdf_path)
                 metadata = verification_result.get("metadata") or {}
-                signer_id = (
-                    verification_result.get("signer_id")
-                    or metadata.get("signerId")
-                    or metadata.get("signer_id")
-                    or metadata.get("SignerId")
-                    or ""
-                )
-                algorithm = (
-                    verification_result.get("algorithm")
-                    or metadata.get("algorithm")
-                    or metadata.get("Algorithm")
-                    or "ML-DSA-65"
-                )
-                hash_function = (
-                    verification_result.get("hash_function")
-                    or metadata.get("hashFunction")
-                    or metadata.get("HashFunction")
-                    or "SHAKE-256"
-                )
-                signed_at = (
-                    verification_result.get("signed_at")
-                    or metadata.get("signedAt")
-                    or metadata.get("signed_at")
-                    or metadata.get("SignedAt")
-                    or "-"
-                )
-                document_hash_embedded = (
-                    verification_result.get("document_hash_embedded")
-                    or metadata.get("documentHash")
-                    or metadata.get("DocumentHash")
-                    or metadata.get("document_hash")
-                    or ""
-                )
-                document_hash_current = (
-                    verification_result.get("document_hash_current")
-                    or verification_result.get("actual_document_hash")
-                    or ""
-                )
-                hash_match = (
-                    verification_result.get("hash_match")
-                    if verification_result.get("hash_match") is not None
-                    else verification_result.get("document_hash_matches")
-                )
+                signer_id = (verification_result.get("signer_id") or metadata.get("signerId") or metadata.get("signer_id") or "")
+                algorithm = (verification_result.get("algorithm") or metadata.get("algorithm") or "ML-DSA-65")
+                hash_function = (verification_result.get("hash_function") or metadata.get("hashFunction") or "SHAKE-256")
+                signed_at = (verification_result.get("signed_at") or metadata.get("signedAt") or "-")
+                document_hash_embedded = (verification_result.get("document_hash_embedded") or metadata.get("documentHash") or "")
+                document_hash_current = (verification_result.get("document_hash_current") or verification_result.get("actual_document_hash") or "")
+                hash_match = (verification_result.get("hash_match") if verification_result.get("hash_match") is not None else verification_result.get("document_hash_matches"))
                 signature_valid = verification_result.get("signature_valid")
-                cert_serial = (
-                    verification_result.get("cert_serial")
-                    or metadata.get("certSerial")
-                    or metadata.get("cert_serial")
-                    or metadata.get("CertSerial")
-                    or "-"
-                )
+                cert_serial = (verification_result.get("cert_serial") or metadata.get("certSerial") or "-")
+                
                 verification_result["signer_id"] = signer_id
                 verification_result["signer_name"] = _get_user_display_name(signer_id) or "-"
                 verification_result["algorithm"] = algorithm
                 verification_result["hash_function"] = hash_function
                 verification_result["signed_at"] = signed_at
-                verification_result["public_key_source"] = (
-                    verification_result.get("public_key_source")
-                    or "PDF metadata"
-                )
+                verification_result["public_key_source"] = (verification_result.get("public_key_source") or "PDF metadata")
                 verification_result["document_hash_embedded"] = document_hash_embedded
                 verification_result["document_hash_current"] = document_hash_current
                 verification_result["hash_match"] = hash_match
@@ -698,13 +617,11 @@ def verify_document_view(request):
                 verification_result["actual_document_hash"] = document_hash_current
                 verification_result["document_hash_matches"] = hash_match
                 verification_result["pqc_cert_serial"] = cert_serial
+                
                 if verification_result.get("is_valid"):
                     messages.success(request, "Chữ ký PQC hợp lệ.")
                 else:
-                    messages.error(
-                        request,
-                        verification_result.get("error") or "Chữ ký PQC không hợp lệ."
-                    )
+                    messages.error(request, verification_result.get("error") or "Chữ ký PQC không hợp lệ.")
             except Exception as e:
                 messages.error(request, f"Kiểm tra chữ ký thất bại: {e}")
     else:
@@ -712,12 +629,7 @@ def verify_document_view(request):
     return render(
         request,
         "app/verify.html",
-        {
-            "form": form,
-            "verification_result": verification_result,
-            "title": "Kiểm tra chữ ký",
-            "year": datetime.now().year,
-        },
+        {"form": form, "verification_result": verification_result, "title": "Kiểm tra chữ ký", "year": datetime.now().year},
     )
 
 def upload_pdf(request):
@@ -727,49 +639,33 @@ def upload_pdf(request):
     if db is None:
         messages.error(request, "Database chưa kết nối, không thể upload hồ sơ.")
         return redirect("dashboard")
-    officers = list(db.users.find({
-        "role": "officer",
-        "pqc_status": "active"
-    }))
+
+    # LỌC DANH SÁCH CÁN BỘ: Chỉ đưa lên danh sách những Cán bộ có Chứng thư còn hạn hợp lệ.
+    active_officers = []
+    for user in db.users.find({"role": "officer", "pqc_status": "active"}):
+        officer_key = db.officer_keys.find_one({"officer_id": user["_id"], "status": "active"})
+        if officer_key:
+            cert = db.certificates.find_one({"serial_number": officer_key.get("cert_serial"), "status": "valid"})
+            if cert and cert.get("not_after") and datetime.utcnow() < cert.get("not_after"):
+                active_officers.append(user)
+
     if request.method == "POST":
-        form = UploadPDFForm(request.POST, request.FILES, officers=officers)
+        form = UploadPDFForm(request.POST, request.FILES, officers=active_officers)
         if form.is_valid():
             pdf_file = form.cleaned_data["pdf_file"]
             officer_id = form.cleaned_data.get("officer_id")
             upload_type = form.cleaned_data.get("upload_type", "unsigned")
+            
             if upload_type == "signed":
-                pdf_path, pdf_relative_path = _save_uploaded_file(
-                    pdf_file,
-                    "signed_uploads"
-                )
+                pdf_path, pdf_relative_path = _save_uploaded_file(pdf_file, "signed_uploads")
                 try:
                     verification_result = ca_verify_pdf(pdf_path)
                     if not verification_result.get("is_valid"):
-                        messages.error(
-                            request,
-                            verification_result.get("error")
-                            or "File PDF đã ký không hợp lệ, hệ thống không lưu hồ sơ."
-                        )
-                        return render(
-                            request,
-                            "app/upload_pdf.html",
-                            {
-                                "form": form,
-                                "title": "Upload hồ sơ PDF",
-                                "year": datetime.now().year,
-                            },
-                        )
+                        messages.error(request, verification_result.get("error") or "File PDF đã ký không hợp lệ, hệ thống không lưu hồ sơ.")
+                        return render(request, "app/upload_pdf.html", {"form": form, "title": "Upload hồ sơ PDF", "year": datetime.now().year})
                 except Exception as e:
                     messages.error(request, f"Kiểm tra chữ ký file đã ký thất bại: {e}")
-                    return render(
-                        request,
-                        "app/upload_pdf.html",
-                        {
-                            "form": form,
-                            "title": "Upload hồ sơ PDF",
-                            "year": datetime.now().year,
-                        },
-                    )
+                    return render(request, "app/upload_pdf.html", {"form": form, "title": "Upload hồ sơ PDF", "year": datetime.now().year})
                 try:
                     with open(pdf_path, "rb") as f:
                         signed_pdf_data = f.read()
@@ -784,6 +680,7 @@ def upload_pdf(request):
                 except Exception as e:
                     messages.error(request, f"Mã hóa lưu trữ tệp tin thất bại: {e}")
                     return redirect("dashboard")
+                    
                 application_doc = {
                     "citizen_id": _to_mongo_id(request.session.get("user_id")),
                     "assigned_officer_id": _to_mongo_id(officer_id) if officer_id else None,
@@ -791,44 +688,31 @@ def upload_pdf(request):
                     "submission_type": "signed",
                     "requires_officer_signature": False,
                     "pqc_encryption_metadata": {
-                        "ciphertext_path": None,
-                        "original_upload_path": pdf_relative_path,
-                        "encapsulated_key": None,
-                        "kems_variant": None,
-                        "payload_cipher": None,
-                        "nonce": None,
-                        "classical_public_key_algorithm": None,
+                        "ciphertext_path": None, "original_upload_path": pdf_relative_path,
+                        "encapsulated_key": None, "kems_variant": None, "payload_cipher": None,
+                        "nonce": None, "classical_public_key_algorithm": None,
                     },
                     "result_document": {
                         "signed_ciphertext_path": encrypted_relative_path,
-                        "pqc_signature_id": None,
-                        "verification_result": verification_result,
+                        "pqc_signature_id": None, "verification_result": verification_result,
                     },
                     "created_at": datetime.utcnow(),
                 }
                 db.applications.insert_one(application_doc)
-                messages.success(request, "File đã ký hợp lệ. Hồ sơ đã được mã hóa lưu trữ và lưu vào hệ thống.")
+                messages.success(request, "File đã ký hợp lệ. Hồ sơ đã được mã hóa lưu trữ an toàn.")
                 return redirect("dashboard")
+                
             if not officer_id:
                 messages.error(request, "Vui lòng chọn cán bộ xử lý hồ sơ.")
-                return render(
-                    request,
-                    "app/upload_pdf.html",
-                    {
-                        "form": form,
-                        "title": "Upload hồ sơ PDF",
-                        "year": datetime.now().year,
-                    },
-                )
-            pdf_path, pdf_relative_path = _save_uploaded_file(
-                pdf_file,
-                "uploaded_pdfs"
-            )
+                return render(request, "app/upload_pdf.html", {"form": form, "title": "Upload hồ sơ PDF", "year": datetime.now().year})
+                
+            pdf_path, pdf_relative_path = _save_uploaded_file(pdf_file, "uploaded_pdfs")
             encrypted_dir = os.path.join(settings.MEDIA_ROOT, "encrypted_uploads")
             os.makedirs(encrypted_dir, exist_ok=True)
             encrypted_file_name = f"{uuid.uuid4().hex}.enc"
             encrypted_path = os.path.join(encrypted_dir, encrypted_file_name)
             encrypted_relative_path = f"encrypted_uploads/{encrypted_file_name}".replace("\\", "/")
+            
             try:
                 encryption_result = ca_encrypt_pdf(pdf_path, officer_id)
                 with open(encrypted_path, "wb") as f:
@@ -836,16 +720,13 @@ def upload_pdf(request):
                 if os.path.exists(pdf_path):
                     os.remove(pdf_path)
             except Exception as e:
-                messages.error(request, f"Mã hóa PDF qua CA Server thất bại: {e}")
-                return render(
-                    request,
-                    "app/upload_pdf.html",
-                    {
-                        "form": form,
-                        "title": "Upload hồ sơ PDF",
-                        "year": datetime.now().year,
-                    },
-                )
+                error_msg = str(e)
+                if "403" in error_msg:
+                    messages.error(request, "Lỗi từ máy chủ CA: Chứng thư của Cán bộ này đã hết hạn, không thể tiếp nhận hồ sơ!")
+                else:
+                    messages.error(request, f"Mã hóa PDF qua CA Server thất bại: {error_msg}")
+                return render(request, "app/upload_pdf.html", {"form": form, "title": "Upload hồ sơ PDF", "year": datetime.now().year})
+                
             application_doc = {
                 "citizen_id": _to_mongo_id(request.session.get("user_id")),
                 "assigned_officer_id": _to_mongo_id(officer_id),
@@ -871,15 +752,11 @@ def upload_pdf(request):
             messages.success(request, "Upload và mã hóa hồ sơ PDF thành công.")
             return redirect("dashboard")
     else:
-        form = UploadPDFForm(officers=officers)
+        form = UploadPDFForm(officers=active_officers)
     return render(
         request,
         "app/upload_pdf.html",
-        {
-            "form": form,
-            "title": "Upload hồ sơ PDF",
-            "year": datetime.now().year,
-        },
+        {"form": form, "title": "Upload hồ sơ PDF", "year": datetime.now().year},
     )
 
 def contact(request):
