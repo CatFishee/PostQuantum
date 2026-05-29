@@ -114,3 +114,8 @@ STATIC_ROOT = posixpath.join(*(BASE_DIR.split(os.path.sep) + ['static']))
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+# --- CẤU HÌNH BẢO VỆ BỘ NHỚ KHI UPLOAD ---
+# Nâng giới hạn kích thước dữ liệu Form Data (chuỗi Base64 PDF) và File Uploads lên 50MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = 52428800  # 50 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 52428800  # 50 MB

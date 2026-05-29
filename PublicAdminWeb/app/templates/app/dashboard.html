@@ -49,7 +49,7 @@
                      </a>
                      
                      {% if doc.status == "processed" %}
-                         <a class="btn btn-sm btn-success" href="/media/{{ doc.signed_file_path }}">
+                         <a class="btn btn-sm btn-success" href="{{ doc.signed_file_path }}">
                          Tải file đã ký
                          </a>
                      {% else %}
@@ -60,7 +60,7 @@
                      
                  {% else %}
                      {% if doc.signed_file_path %}
-                         <a class="btn btn-sm btn-success" href="/media/{{ doc.signed_file_path }}" target="_blank">
+                         <a class="btn btn-sm btn-success" href="{{ doc.signed_file_path }}" target="_blank">
                              Tải file đã ký
                         </a>
                      {% elif doc.submission_type == "signed" and doc.original_upload_path %}

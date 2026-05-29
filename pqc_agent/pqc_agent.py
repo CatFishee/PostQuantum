@@ -4,12 +4,12 @@ import json
 import base64
 import tempfile
 import requests
+import hashlib
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Cấu hình nạp tệp DLL cục bộ trên hệ điều hành Windows
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
     os.add_dll_directory(current_dir)
@@ -23,14 +23,7 @@ from cryptography.hazmat.primitives import hashes
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Quản lý vòng đời hiện đại: In Banner nhận diện ra Terminal khi khởi động."""
     print("\n" + "="*60)
-    print(" █████╗  ██████╗ ███████╗███╗   ██╗████████╗")
-    print("██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝")
-    print("███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   ")
-    print("██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   ")
-    print("██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   ")
-    print("╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ")
     print(" >> [SYSTEM STATE: CLIENT SIDE LOCAL SIGNING AGENT ONLINE]")
     print(" >> Port: 54321 | Endpoint: http://127.0.0.1:54321")
     print("="*60 + "\n")
@@ -38,7 +31,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="PQC Local Client Agent", lifespan=lifespan)
 
-# Chấp nhận mọi Port chạy trên localhost / 127.0.0.1 để tránh lỗi CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
@@ -58,6 +50,12 @@ class SignAndEncryptRequest(BaseModel):
     django_host: str = "http://127.0.0.1:8000"
     cert_serial: str
     signer_id: str
+
+class DecryptRequest(BaseModel):
+    ciphertext_base64: str
+    encapsulated_key_base64: str
+    nonce_base64: str
+    passphrase: str
 
 def _derive_aes_key(passphrase: str, salt: bytes = b"PQC_Agent_Salt") -> bytes:
     kdf = PBKDF2HMAC(
@@ -88,9 +86,8 @@ def _load_decrypted_private_keys(passphrase: str) -> dict:
     except Exception:
         raise HTTPException(status_code=401, detail="Mật khẩu giải mã khóa riêng không đúng.")
 
-# --- HELPER BĂM HỒ SƠ PDF CỤC BỘ ---
 def hash_pdf_pqc_local(file_path: str) -> bytes:
-    shake = hashes.SHAKE256(32)
+    shake = hashlib.shake_256()
     with pikepdf.Pdf.open(file_path) as pdf:
         shake.update(str(len(pdf.pages)).encode("utf-8"))
         for page in pdf.pages:
@@ -106,9 +103,8 @@ def hash_pdf_pqc_local(file_path: str) -> bytes:
                                 shake.update(sub_obj.read_bytes())
             except Exception:
                 pass
-    return shake.finalize()
+    return shake.digest(32)
 
-# --- HELPER NHÚNG CHỮ KÝ PDF CỤC BỘ ---
 def embed_signature_and_timestamp_local(
     input_pdf_path: str,
     output_pdf_path: str,
@@ -129,7 +125,14 @@ def embed_signature_and_timestamp_local(
         sig_dict.CertSerial = pikepdf.String(signer_cert_serial)
         sig_dict.SignerPublicKey = pikepdf.String(signer_pub_key_hex)
         
-        pdf.Catalog.get_or_create_dictionary(pikepdf.Name.AcroForm)
+        # FIX: Sử dụng pdf.Root thay cho pdf.Catalog và nhúng trực tiếp mảng Fields vào AcroForm
+        if "/AcroForm" not in pdf.Root:
+            pdf.Root.AcroForm = pikepdf.Dictionary(Fields=pikepdf.Array())
+        elif "/Fields" not in pdf.Root.AcroForm:
+            pdf.Root.AcroForm.Fields = pikepdf.Array()
+            
+        pdf.Root.AcroForm.Fields.append(sig_dict)
+        
         pdf.docinfo["/PQCSigned"] = "True"
         pdf.docinfo["/PQCSignature"] = signature_hex
         pdf.docinfo["/PQCTSA"] = pikepdf.String(f"{json.dumps(tsa_token_json)}||{tsa_signature_hex}")
@@ -150,7 +153,9 @@ def generate_keys(req: KeyGenRequest):
 
         payload = {
             "ml_dsa_priv_hex": dsa_priv.hex(),
-            "ml_kem_priv_hex": kem_priv.hex()
+            "ml_kem_priv_hex": kem_priv.hex(),
+            "ml_dsa_pub_hex": dsa_pub.hex(),
+            "ml_kem_pub_hex": kem_pub.hex()
         }
         aes_key = _derive_aes_key(req.passphrase)
         aesgcm = AESGCM(aes_key)
@@ -175,19 +180,12 @@ def generate_keys(req: KeyGenRequest):
 
 @app.post("/api/sign-and-encrypt")
 def sign_and_encrypt(req: SignAndEncryptRequest):
-    """
-    Luồng Ký số và Mã hóa tại Biên:
-    Tự băm, tự ký số, tự nhúng chữ ký cục bộ, tự động lấy khóa công khai CA qua Django Proxy,
-    và tiến hành mã hóa ML-KEM-1024 bảo vệ tệp trước khi truyền đi.
-    """
-    # 1. Giải mã khóa riêng ML-DSA-65 cục bộ
     keys = _load_decrypted_private_keys(req.passphrase)
     dsa_priv = bytes.fromhex(keys["ml_dsa_priv_hex"])
-    dsa_pub_hex = keys.get("ml_dsa_pub_hex", "") # có thể phục hồi từ dsa_pub sinh lúc đầu nếu lưu kèm, hoặc lấy dsa_pub dạng hex
+    dsa_pub_hex = keys.get("ml_dsa_pub_hex", "")
 
     pdf_bytes = base64.b64decode(req.pdf_base64)
     
-    # Sử dụng tệp tạm thời cục bộ trên thiết bị của cán bộ để thao tác pikepdf
     temp_in = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     temp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     try:
@@ -195,21 +193,17 @@ def sign_and_encrypt(req: SignAndEncryptRequest):
         temp_in.close()
         temp_out.close()
 
-        # 2. Tính toán mã băm ổn định
         doc_hash = hash_pdf_pqc_local(temp_in.name)
 
-        # 3. Ký ML-DSA-65 lên mã băm
         with oqs.Signature("ML-DSA-65", secret_key=dsa_priv) as signer:
             signature = signer.sign(doc_hash)
 
-        # 4. Giao tiếp Web Server để lấy Dấu thời gian TSA trực tuyến
         tsa_url = f"{req.django_host}/api/ca-tsa/"
         tsa_resp = requests.post(tsa_url, json={"document_hash_hex": doc_hash.hex()}, timeout=15)
         if tsa_resp.status_code != 200:
-            raise Exception("Không thể lấy dấu thời gian TSA từ hệ thống mạng.")
+            raise Exception(f"Không thể lấy dấu thời gian TSA từ hệ thống mạng. Mã HTTP: {tsa_resp.status_code}, Chi tiết: {tsa_resp.text}")
         tsa_data = tsa_resp.json()
 
-        # 5. Nhúng chữ ký số và nhãn thời gian trực tiếp vào PDF cục bộ
         embed_signature_and_timestamp_local(
             input_pdf_path=temp_in.name,
             output_pdf_path=temp_out.name,
@@ -217,20 +211,18 @@ def sign_and_encrypt(req: SignAndEncryptRequest):
             tsa_token_json=tsa_data["token_body"],
             tsa_signature_hex=tsa_data["tsa_signature_hex"],
             signer_cert_serial=req.cert_serial,
-            signer_pub_key_hex=keys.get("ml_dsa_pub_hex", "") or signature.hex()[:10]  # Phục hồi hoặc giả lập nếu thiếu hex
+            signer_pub_key_hex=dsa_pub_hex or signature.hex()[:10]
         )
 
         with open(temp_out.name, "rb") as f:
             signed_pdf_raw = f.read()
 
-        # 6. Gọi Web Server Proxy để lấy khóa công khai ML-KEM-1024 của CA Server
         ca_pk_url = f"{req.django_host}/api/ca-public-key/"
         ca_pk_resp = requests.get(ca_pk_url, timeout=10)
         if ca_pk_resp.status_code != 200:
-            raise Exception("Không thể kết nối lấy khóa công khai của máy chủ CA.")
+            raise Exception(f"Không thể kết nối lấy khóa công khai của máy chủ CA. Mã HTTP: {ca_pk_resp.status_code}, Chi tiết: {ca_pk_resp.text}")
         ca_pub_key = bytes.fromhex(ca_pk_resp.json()["public_key"])
 
-        # 7. Mã hóa tệp đã ký bằng ML-KEM-1024 nhắm tới CA Server bảo vệ in-transit
         with oqs.KeyEncapsulation("ML-KEM-1024") as kem:
             encapsulated_key, shared_secret = kem.encap_secret(ca_pub_key)
 
@@ -248,13 +240,37 @@ def sign_and_encrypt(req: SignAndEncryptRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi ký và mã hóa tại biên: {str(e)}")
     finally:
-        # Dọn dẹp tệp tạm thời trên ổ cứng cán bộ ngay lập tức
         for path in (temp_in.name, temp_out.name):
             try:
                 if os.path.exists(path):
                     os.remove(path)
             except Exception:
                 pass
+
+@app.post("/api/decrypt-pdf")
+def decrypt_pdf_agent(req: DecryptRequest):
+    try:
+        keys = _load_decrypted_private_keys(req.passphrase)
+        
+        kem_priv = bytes.fromhex(keys["ml_kem_priv_hex"])
+        
+        enc_key = base64.b64decode(req.encapsulated_key_base64)
+        ciphertext = base64.b64decode(req.ciphertext_base64)
+        nonce = base64.b64decode(req.nonce_base64)
+        
+        with oqs.KeyEncapsulation("ML-KEM-768", secret_key=kem_priv) as kem:
+            shared_secret = kem.decap_secret(enc_key)
+            
+        aes_key = shared_secret[:32]
+        aesgcm = AESGCM(aes_key)
+        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+        
+        return {
+            "status": "success",
+            "pdf_base64": base64.b64encode(plaintext).decode("utf-8")
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi giải mã tại biên: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

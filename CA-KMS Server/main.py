@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, Form
 from pydantic import BaseModel
 import uvicorn
 
-# Cấu hình nạp tệp DLL cục bộ trên Windows
+# Cấu hình nạp tệp DLL cục bộ trên hệ điều hành Windows
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
     os.add_dll_directory(current_dir)
@@ -25,12 +25,6 @@ from crypto_utils import aes_gcm_encrypt, aes_gcm_decrypt
 async def lifespan(app: FastAPI):
     """Quản lý vòng đời hiện đại: In Banner CA Server ra Terminal."""
     print("\n" + "="*60)
-    print(" ██████╗ ██████╗      ██╗  ██╗███╗   ███╗███████╗")
-    print("██╔════╝██╔═══██╗     ██║ ██╔╝████╗ ████║██╔════╝")
-    print("██║     ██║   ██║     █████╔╝ ██╔████╔██║███████╗")
-    print("██║     ██║   ██║     ██╔═██╗ ██║╚██╔╝██║╚════██║")
-    print("╚██████╗╚██████╔╝     ██║  ██╗██║ ╚═╝ ██║███████║")
-    print(" ╚═════╝ ╚═════╝      ╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝")
     print(" >> [SYSTEM STATE: CENTRAL CA-KMS & TSA SERVER IS RUNNING]")
     print(" >> Port: 5001 | Endpoint: http://127.0.0.1:5001")
     print("="*60 + "\n")
@@ -92,24 +86,36 @@ class TimestampRequest(BaseModel):
 class OCSPRequest(BaseModel):
     serial_number: str
 
+# Payload dạng JSON cho luồng mã hóa không đĩa cứng của người dân
+class UnsignedEncryptRequest(BaseModel):
+    officer_id: str
+    citizen_id: str
+    original_filename: str
+    pdf_base64: str
+
 def _to_object_id_local(value):
     from bson import ObjectId
     if not value: return value
     try: return ObjectId(str(value))
     except Exception: return value
 
+# --- CHƯƠNG TRÌNH XÁC MINH TÍNH TOÀN VẸN CHỨNG THƯ SỐ (PQC CERT VERIFICATION) ---
 def verify_certificate_integrity(cert_doc: dict, ca_pub_key_hex: str) -> bool:
     try:
         cert_body = cert_doc.get("certificate_body")
         ca_signature_hex = cert_doc.get("ca_signature_hex")
         if not cert_body or not ca_signature_hex:
             return False
+            
         cert_data_bytes = json.dumps(cert_body, sort_keys=True).encode("utf-8")
+        
         shake = hashlib.shake_256()
         shake.update(cert_data_bytes)
         cert_hash = shake.digest(32)
+        
         ca_pub_bytes = bytes.fromhex(ca_pub_key_hex)
         ca_sig_bytes = bytes.fromhex(ca_signature_hex)
+        
         with oqs.Signature("ML-DSA-65") as verifier:
             return bool(verifier.verify(cert_hash, ca_sig_bytes, ca_pub_bytes))
     except Exception:
@@ -225,6 +231,88 @@ def register_officer(req: RegisterRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Registration and certification issuing failed: {str(e)}")
 
+# --- 100% IN-MEMORY HỒ SƠ UPLOAD CHƯA KÝ ---
+@app.post("/encrypt-pdf")
+async def encrypt_pdf(req: UnsignedEncryptRequest):
+    """
+    API tiếp nhận yêu cầu mã hóa hồ sơ chưa ký từ Web Server.
+    Độ bảo mật tối cao: Không lưu tệp cục bộ, giải mã byte trực tiếp trên RAM,
+    thẩm định và tiến hành upload trực tiếp lên Cloud Database MongoDB Atlas.
+    """
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database Offline")
+    try:
+        # 1. Thẩm định an ninh chứng thư cán bộ tiếp nhận
+        officer_key = db.officer_keys.find_one({
+            "officer_id": _to_object_id_local(req.officer_id),
+            "status": "active"
+        })
+        if not officer_key or not officer_key.get("ml_kem_pk"):
+            raise HTTPException(status_code=404, detail="Cán bộ chưa khởi tạo cặp khóa active.")
+
+        cert = db.certificates.find_one({"serial_number": officer_key.get("cert_serial")})
+        if not cert:
+            raise HTTPException(status_code=403, detail="Không tìm thấy chứng thư của cán bộ tiếp nhận.")
+
+        if not verify_certificate_integrity(cert, CA_HSM_STORE["ca_dsa_pub"]):
+            raise HTTPException(status_code=403, detail="Chứng thư cán bộ tiếp nhận bị thay đổi trái phép (DB Tampered).")
+
+        if cert.get("status") != "valid":
+            raise HTTPException(status_code=403, detail="Chứng thư cán bộ tiếp nhận đã bị vô hiệu lực.")
+
+        if cert.get("not_after") and datetime.datetime.utcnow() > cert["not_after"]:
+            raise HTTPException(status_code=403, detail="Chứng thư cán bộ tiếp nhận đã hết hạn sử dụng.")
+
+        # 2. Thực hiện mã hóa ML-KEM-768 thô trên RAM
+        pdf_bytes = base64.b64decode(req.pdf_base64)
+        with oqs.KeyEncapsulation("ML-KEM-768") as kem:
+            encapsulated_key, shared_secret = kem.encap_secret(officer_key["ml_kem_pk"])
+
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        aes_key = shared_secret[:32]
+        aesgcm = AESGCM(aes_key)
+        nonce = os.urandom(12)
+        ciphertext = aesgcm.encrypt(nonce, pdf_bytes, None)
+
+        # 3. ĐẨY TRỰC TIẾP DỮ LIỆU MẬT MÃ LÊN CLOUD DATABASE ATLAS (KHÔNG LƯU FILE CỤC BỘ)
+        application_doc = {
+            "citizen_id": _to_object_id_local(req.citizen_id),
+            "assigned_officer_id": _to_object_id_local(req.officer_id),
+            "status": "submitted",
+            "submission_type": "unsigned",
+            "requires_officer_signature": True,
+            "pqc_encryption_metadata": {
+                "ciphertext_b64": base64.b64encode(ciphertext).decode("utf-8"),
+                "original_upload_path": f"uploaded_pdfs/{req.original_filename}",
+                "encapsulated_key": encapsulated_key.hex(),
+                "kems_variant": "ML-KEM-768",
+                "payload_cipher": "AES-256-GCM",
+                "nonce": nonce.hex(),
+            },
+            "result_document": {
+                "ciphertext_b64": None,
+                "encapsulated_key_b64": None,
+                "nonce_b64": None,
+            },
+            "created_at": datetime.datetime.utcnow(),
+        }
+        db.applications.insert_one(application_doc)
+
+        # Ghi nhận Audit Log toàn vẹn lưu trữ trực tiếp lên Atlas DB
+        db.audit_logs.insert_one({
+            "doc_id": application_doc["_id"],
+            "citizen_id": _to_object_id_local(req.citizen_id),
+            "action": "citizen_upload_and_encrypt",
+            "logged_at": datetime.datetime.utcnow(),
+            "status": "success"
+        })
+
+        return {"status": "success", "message": "Hồ sơ chưa ký đã được mã hóa và tải lên đám mây Atlas thành công."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Mã hóa PDF thất bại: {str(e)}")
+
 @app.post("/verify-and-store-signed")
 def verify_and_store_signed(
     doc_id: str = Form(...),
@@ -295,10 +383,8 @@ def verify_and_store_signed(
             raise Exception("Chứng thư số của cán bộ ký đã hết hạn sử dụng.")
 
         # --- LỚP 4: XÁC MINH TOÀN VẸN CHỮ KÝ SỐ TRÊN TỆP PDF ---
-        # Tính toán lại mã băm ổn định của tệp PDF thô
         doc_hash_recalculated = hash_pdf_pqc_server(temp_file.name)
         
-        # Lấy khóa công khai dsa của cán bộ từ thân chứng thư đã kiểm định toàn vẹn
         officer_dsa_pk = bytes.fromhex(cert_doc["certificate_body"]["public_keys"]["ml_dsa_pk"])
         sig_bytes = bytes.fromhex(signature_hex_str)
 
@@ -317,7 +403,6 @@ def verify_and_store_signed(
         aesgcm_store = AESGCM(aes_key_store)
         nonce_store = os.urandom(12)
         
-        # Mã hóa tệp đã được kiểm chứng
         ciphertext_storage = aesgcm_store.encrypt(nonce_store, decrypted_pdf, None)
 
         # Cập nhật trực tiếp kết quả mật mã tĩnh lên MongoDB Atlas
@@ -363,10 +448,6 @@ def decrypt_pdf(
     encapsulated_key_base64: str = Form(...),
     nonce_base64: str = Form(...)
 ):
-    """
-    API hỗ trợ giải mã luồng byte trực tuyến bằng khóa riêng Master KEM của CA.
-    Dùng khi Django Web Server có phân quyền hợp lệ yêu cầu stream file cho người dùng tải.
-    """
     try:
         ca_kem_priv = bytes.fromhex(CA_HSM_STORE["ml_kem_priv"])
         ciphertext = base64.b64decode(ciphertext_base64)
@@ -400,7 +481,6 @@ def generate_timestamp(req: TimestampRequest):
         }
         token_bytes = json.dumps(token_body, sort_keys=True).encode("utf-8")
         
-        # Băm dấu thời gian bằng SHAKE-256 gốc
         shake = hashlib.shake_256()
         shake.update(token_bytes)
         token_hash = shake.digest(32)
@@ -425,7 +505,6 @@ def check_ocsp(req: OCSPRequest):
     if not cert:
         status = "unknown"
     else:
-        # NÂNG CẤP AN NINH: Xác minh chữ ký CA trên tệp OCSP trước khi trả về trạng thái
         if not verify_certificate_integrity(cert, CA_HSM_STORE["ca_dsa_pub"]):
             status = "tampered"
         else:
@@ -442,7 +521,6 @@ def check_ocsp(req: OCSPRequest):
     ca_dsa_priv = bytes.fromhex(CA_HSM_STORE["ca_dsa_priv"])
     resp_bytes = json.dumps(response_body, sort_keys=True).encode("utf-8")
     
-    # Băm kết quả OCSP bằng SHAKE-256 gốc
     shake = hashlib.shake_256()
     shake.update(resp_bytes)
     resp_hash = shake.digest(32)
@@ -471,7 +549,6 @@ def get_crl():
     
     crl_bytes = json.dumps(crl_body, sort_keys=True).encode("utf-8")
     
-    # Băm danh sách CRL bằng SHAKE-256 gốc
     shake = hashlib.shake_256()
     shake.update(crl_bytes)
     crl_hash = shake.digest(32)

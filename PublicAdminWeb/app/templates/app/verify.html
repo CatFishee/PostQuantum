@@ -14,10 +14,9 @@
 <form method="post" enctype="multipart/form-data" class="mt-3">
     {% csrf_token %}
     <div class="mb-3">
-        {{ form.pdf_file.label_tag }}
-        {{ form.pdf_file }}
-        <div class="form-text">Upload PDF đã được nhúng XML chữ ký PQC trong metadata.</div>
-        {{ form.pdf_file.errors }}
+        <label class="form-label fw-bold">Chọn tệp tin PDF hồ sơ đã được ký số</label>
+        <input type="file" name="pdf_file" class="form-control" accept="application/pdf" required>
+        <div class="form-text">Upload PDF đã được nhúng siêu dữ liệu XML chữ ký PQC trong Metadata.</div>
     </div>
     <button type="submit" class="btn btn-primary">
         <i class="fas fa-check-circle"></i> Kiểm tra chữ ký
@@ -28,7 +27,7 @@
 <hr>
 {% if verification_result.is_valid %}
 <div class="alert alert-success">
-    <strong>Hợp lệ.</strong> documentHash khớp và chữ ký ML-DSA verify thành công.
+    <strong>Hợp lệ.</strong> Mã băm toàn vẹn, xác minh chữ ký ML-DSA thành công và Chứng thư có hiệu lực.
 </div>
 {% else %}
 <div class="alert alert-danger">
@@ -37,49 +36,46 @@
 </div>
 {% endif %}
 
-<table class="table table-bordered table-sm">
+<table class="table table-bordered table-sm mt-3">
     <tbody>
         <tr>
-            <th>Nguời ký</th>
-            <td>
-                {{ verification_result.signer_name|default:"-" }}
-                {% if verification_result.signer_id %}<code class="ms-2">{{ verification_result.signer_id }}</code>{% endif %}
-            </td>
+            <th>Nguời ký / Tổ chức</th>
+            <td>{{ verification_result.signer_name|default:"-" }}</td>
         </tr>
         <tr>
-            <th>Thuật toán</th>
+            <th>Thuật toán chữ ký</th>
             <td>{{ verification_result.algorithm }}</td>
         </tr>
         <tr>
-            <th>Hash function</th>
+            <th>Hàm băm dữ liệu</th>
             <td>{{ verification_result.hash_function }}</td>
         </tr>
         <tr>
-            <th>Thời gian ký</th>
+            <th>Thời gian ký (TSA Timestamp)</th>
             <td>{{ verification_result.signed_at|default:"-" }}</td>
         </tr>
         <tr>
-            <th>Public key source</th>
+            <th>Nguồn khóa xác minh</th>
             <td>{{ verification_result.public_key_source|default:"-" }}</td>
         </tr>
         <tr>
-            <th>Document hash embedded</th>
+            <th>Mã băm nhúng trong chữ ký</th>
             <td><code>{{ verification_result.document_hash }}</code></td>
         </tr>
         <tr>
-            <th>Document hash hiện tại</th>
+            <th>Mã băm tính toán thực tế</th>
             <td><code>{{ verification_result.actual_document_hash }}</code></td>
         </tr>
         <tr>
-            <th>Hash match</th>
+            <th>Toàn vẹn tệp tin (Hash Match)</th>
             <td>{{ verification_result.document_hash_matches }}</td>
         </tr>
         <tr>
-            <th>Signature valid</th>
+            <th>Chữ ký toán học (Signature Valid)</th>
             <td>{{ verification_result.signature_valid }}</td>
         </tr>
         <tr>
-            <th>Cert serial</th>
+            <th>Số Seri chứng thư PQC (Cert Serial)</th>
             <td>{{ verification_result.pqc_cert_serial|default:"-" }}</td>
         </tr>
     </tbody>

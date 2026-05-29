@@ -6,13 +6,16 @@
 {% if messages %}
 <div class="messages">
     {% for message in messages %}
-    <div class="alert alert-{{ message.tags|default:'info' }}">{{ message }}</div>
+    <div class="alert alert-{{ message.tags|default:'info' }} alert-dismissible fade show" role="alert">
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
     {% endfor %}
 </div>
 {% endif %}
 
 {% if document %}
-<div class="alert alert-info">
+<div class="alert alert-info shadow-sm border-0">
     <strong>Hồ sơ ký số:</strong> {{ document.id }}
     {% if document.citizen_id %}<span class="ms-3"><strong>Công dân nộp:</strong> {{ document.citizen_id }}</span>{% endif %}
     {% if document.status %}<span class="ms-3"><strong>Trạng thái:</strong> {{ document.status }}</span>{% endif %}
@@ -22,20 +25,27 @@
 <form id="signForm" method="post" action="" class="mt-3">
     {% csrf_token %}
     
-    <!-- Các trường dữ liệu chữ ký trả về từ Agent -->
-    <input type="hidden" name="signature_hex" id="signature_hex">
-    <input type="hidden" name="document_hash_hex" id="document_hash_hex">
+    <!-- Các trường dữ liệu mật mã tĩnh nhận về từ Local Agent để lưu trữ đám mây -->
+    <input type="hidden" name="ciphertext_base64" id="ciphertext_base64">
+    <input type="hidden" name="encapsulated_key_base64" id="encapsulated_key_base64">
+    <input type="hidden" name="nonce_base64" id="nonce_base64">
+
+    <div class="mb-3">
+        <label class="form-label fw-bold">Chọn tệp tin PDF thô cần ký (Đã được giải mã lưu cục bộ)</label>
+        <input type="file" id="pdfFileInput" class="form-control" accept="application/pdf" required>
+        <div class="form-text">Chọn tệp tin PDF gốc mà đồng chí vừa giải mã và lưu trữ tùy ý trên máy tính của mình.</div>
+    </div>
 
     <div class="mb-3 p-3 bg-light rounded" style="border: 1px dashed #20c997;">
         <label class="form-label fw-bold text-success"><i class="fas fa-key"></i> Xác thực mật khẩu khóa cục bộ</label>
         <input type="password" id="passphrase" class="form-control" placeholder="Nhập mật khẩu mở khóa riêng ML-DSA-65 của đồng chí" required>
         <div class="form-text">
-            Chữ ký số sẽ được thực hiện trực tiếp dưới Client Agent cục bộ để đảm bảo an ninh tuyệt đối cho khóa riêng của đồng chí.
+            Chữ ký số và mã hóa bảo mật in-transit hướng tới CA sẽ được thực hiện trực tiếp dưới Client Agent để đảm bảo an ninh tuyệt đối cho khóa riêng của đồng chí.
         </div>
     </div>
 
     <button type="button" onclick="performLocalSign()" class="btn btn-success">
-        <i class="fas fa-file-signature"></i> Ký xác thực PDF cục bộ
+        <i class="fas fa-file-signature"></i> Ký xác thực & Mã hóa gửi duyệt
     </button>
     <a href="{% url 'dashboard' %}" class="btn btn-outline-secondary ms-2">Hủy bỏ</a>
 </form>
@@ -43,41 +53,54 @@
 <script>
     async function performLocalSign() {
         var passphrase = document.getElementById('passphrase').value;
-        if(!passphrase) {
+        var fileInput = document.getElementById('pdfFileInput');
+        
+        if (!passphrase) {
             alert("Đồng chí vui lòng nhập mật khẩu mở khóa riêng cục bộ!");
             return;
         }
-
-        // Băm ổn định tệp PDF thô đã được tính toán sẵn từ Server gửi xuống giao diện
-        var documentHashHex = "{{ document_hash_hex|default:'' }}";
-        if(!documentHashHex) {
-            alert("Không tìm thấy mã băm tài liệu gốc hợp lệ từ máy chủ.");
+        if (fileInput.files.length === 0) {
+            alert("Đồng chí vui lòng chọn tệp tin PDF thô cần ký số!");
             return;
         }
 
-        try {
-            // Gửi hash PDF qua Agent cục bộ để lấy chữ ký số ML-DSA-65
-            let response = await fetch("http://127.0.0.1:54321/api/sign-hash", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    document_hash_hex: documentHashHex,
-                    passphrase: passphrase
-                })
-            });
-            let result = await response.json();
-            if (response.ok) {
-                document.getElementById('signature_hex').value = result.signature_hex;
-                document.getElementById('document_hash_hex').value = documentHashHex;
+        var file = fileInput.files[0];
+        var reader = new FileReader();
+        
+        reader.onload = async function() {
+            var pdfBase64 = reader.result.split(',')[1];
+            
+            try {
+                // Gửi PDF thô dạng Base64 và thông tin xác thực xuống Local Agent để ký và mã hóa tại biên
+                let response = await fetch("http://127.0.0.1:54321/api/sign-and-encrypt", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        pdf_base64: pdfBase64,
+                        passphrase: passphrase,
+                        django_host: window.location.origin,  // Tự động phân giải địa chỉ và Port động của Django Web
+                        cert_serial: "{{ cert_serial }}",
+                        signer_id: "{{ signer_id }}"
+                    })
+                });
                 
-                // Gửi chữ ký số lên Django Server để đóng gói TSA và nhúng hoàn chỉnh tệp
-                document.getElementById('signForm').submit();
-            } else {
-                alert("Lỗi ký số tại Local Agent: " + result.detail);
+                let result = await response.json();
+                if (response.ok) {
+                    // Nhận khối dữ liệu mật mã hóa in-transit trả về từ Agent điền vào form
+                    document.getElementById('ciphertext_base64').value = result.ciphertext_base64;
+                    document.getElementById('encapsulated_key_base64').value = result.encapsulated_key_base64;
+                    document.getElementById('nonce_base64').value = result.nonce_base64;
+                    
+                    // Thực hiện submit gửi trực tiếp khối mật mã sang Web Server để chuyển tiếp duyệt CA
+                    document.getElementById('signForm').submit();
+                } else {
+                    alert("Lỗi xử lý tại Local Agent: " + result.detail);
+                }
+            } catch (err) {
+                alert("Không thể kết nối đến PQC Local Agent cục bộ. Vui lòng đảm bảo dịch vụ pqc_agent.py đang hoạt động.");
             }
-        } catch (err) {
-            alert("Không thể kết nối đến PQC Local Agent cục bộ. Vui lòng đảm bảo tệp pqc_agent.py đang chạy.");
-        }
+        };
+        reader.readAsDataURL(file);
     }
 </script>
 {% endblock %}

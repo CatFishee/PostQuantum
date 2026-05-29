@@ -18,12 +18,15 @@ urlpatterns = [
     
     path("decrypt/<str:doc_id>/", views.decrypt_application_view, name="decrypt_application"),
     
-    
     path("media/download/signed/<str:doc_id>/", views.download_signed_pdf, name="download_signed_pdf"),
     
-    path("sign/", views.sign_document_view, name="sign_document_manual"),
     path("sign/<str:doc_id>/", views.sign_document_view, name="sign_document"),
     path("verify/", views.verify_document_view, name="verify_document"),
+    
+    # --- ENDPOINTS PROXY CHO LOCAL AGENT ---
+    path("api/ca-public-key/", views.api_ca_public_key, name="api_ca_public_key"),
+    path("api/ca-tsa/", views.api_ca_tsa, name="api_ca_tsa"),
+    
     path("logout/", LogoutView.as_view(next_page="/"), name="logout"),
     path("admin/", admin.site.urls),
 ]

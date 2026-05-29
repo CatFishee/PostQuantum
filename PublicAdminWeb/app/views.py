@@ -8,20 +8,18 @@ from datetime import datetime
 
 from django.conf import settings
 from django.contrib import messages
-from django.core.files.storage import FileSystemStorage
 from django.shortcuts import redirect, render
-from django.utils.text import get_valid_filename
 from django.urls import reverse
 from django.http import HttpResponse, HttpResponseForbidden, Http404, JsonResponse
+from django.views.decorators.csrf import csrf_exempt
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
 from .crypto_utils import (
-    hash_pdf_pqc,
-    embed_signature_and_timestamp,
     aes_gcm_decrypt,
-    aes_gcm_encrypt
+    aes_gcm_encrypt,
+    hash_pdf_pqc
 )
 from .db_connection import get_db
 
@@ -70,54 +68,6 @@ def _find_document(doc_id):
                 return found
     return None
 
-def _binary_to_hex(value):
-    if not value:
-        return ""
-    if isinstance(value, str):
-        return "".join(value.split())
-    if isinstance(value, (bytes, bytearray)):
-        return bytes(value).hex()
-    if hasattr(value, "hex"):
-        return value.hex()
-    return str(value)
-
-def _get_officer_key_doc(user_id):
-    if db is None or not user_id:
-        return None
-    queries = []
-    mongo_id = _to_mongo_id(user_id)
-    if mongo_id != user_id:
-        queries.append({"officer_id": mongo_id, "status": "active"})
-    queries.append({"officer_id": user_id, "status": "active"})
-    queries.append({"officer_id": str(user_id), "status": "active"})
-    for query in queries:
-        officer_key = db.officer_keys.find_one(query)
-        if officer_key:
-            return officer_key
-    return None
-
-def _get_officer_public_key(user_id):
-    officer_key = _get_officer_key_doc(user_id)
-    if officer_key and "ml_dsa_pk" in officer_key:
-        return _binary_to_hex(officer_key["ml_dsa_pk"])
-    return ""
-
-def _get_pqc_cert_serial(user_id):
-    officer_key = _get_officer_key_doc(user_id)
-    if officer_key:
-        return str(officer_key.get("cert_serial", ""))
-    return ""
-
-def _save_uploaded_file(uploaded_file, folder):
-    target_dir = os.path.join(settings.MEDIA_ROOT, folder)
-    os.makedirs(target_dir, exist_ok=True)
-    storage = FileSystemStorage(location=target_dir)
-    safe_name = get_valid_filename(uploaded_file.name)
-    file_name = f"{uuid.uuid4().hex}_{safe_name}"
-    saved_name = storage.save(file_name, uploaded_file)
-    relative_path = f"{folder}/{saved_name}".replace("\\", "/")
-    return storage.path(saved_name), relative_path
-
 def get_client_ip(request):
     return request.META.get('REMOTE_ADDR', '127.0.0.1')
 
@@ -141,23 +91,14 @@ def officer_ip_required(view_func):
         return view_func(request, *args, **kwargs)
     return _wrapped_view
 
-def encrypt_bytes_to_file_at_rest(data_bytes, output_path):
-    iv, cipher, tag = aes_gcm_encrypt(LOCAL_MASTER_KEY, data_bytes)
-    payload = {
-        "iv": iv.hex(),
-        "tag": tag.hex(),
-        "ciphertext": cipher.hex()
-    }
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f)
-
-def decrypt_file_at_rest_bytes(filepath):
-    with open(filepath, "r", encoding="utf-8") as f:
-        payload = json.load(f)
-    iv = bytes.fromhex(payload["iv"])
-    tag = bytes.fromhex(payload["tag"])
-    cipher = bytes.fromhex(payload["ciphertext"])
-    return aes_gcm_decrypt(LOCAL_MASTER_KEY, iv, cipher, tag)
+# CƠ CHẾ WHITELIST: Chỉ cho phép request đến từ IP mạng nội bộ (Bỏ qua Session để Agent gọi được)
+def internal_ip_only(view_func):
+    def _wrapped_view(request, *args, **kwargs):
+        client_ip = get_client_ip(request)
+        if not is_internal_ip(client_ip):
+            return HttpResponseForbidden(f"Forbidden: API Proxy chỉ chấp nhận kết nối từ Local Agent trong mạng nội bộ ({client_ip}).")
+        return view_func(request, *args, **kwargs)
+    return _wrapped_view
 
 def _document_rows(raw_docs):
     rows = []
@@ -168,9 +109,8 @@ def _document_rows(raw_docs):
         pqc_metadata = doc.get("pqc_encryption_metadata") or {}
         doc_id = str(doc.get("_id", ""))
         signed_file_path = ""
-        # SỬ DỤNG API DOWNLOAD TRỰC TUYẾN TỪ CLOUD DB THAY VÌ TỆP CỤC BỘ
         if result_document.get("ciphertext_b64"):
-            signed_file_path = f"download/signed/{doc_id}/"
+            signed_file_path = reverse("download_signed_pdf", kwargs={"doc_id": doc_id})
         rows.append(
             {
                 "id": doc_id,
@@ -195,30 +135,20 @@ def _get_user_display_name(user_id):
             return user.get("full_name") or user.get("username") or str(user.get("_id", ""))
     return ""
 
-def ca_encrypt_pdf(pdf_path, officer_id):
-    """
-    Gọi API CA-KMS Server để thực hiện xác thực trạng thái chứng thư 
-    và tiến hành mã hóa PDF thô bằng khóa công khai ML-KEM-768 của Cán bộ.
-    """
+def ca_encrypt_pdf_in_memory(pdf_base64, officer_id, citizen_id, original_filename):
     url = "http://127.0.0.1:5001/encrypt-pdf"
-    with open(pdf_path, "rb") as f:
-        files = {"pdf_file": f}
-        data = {"officer_id": str(officer_id)}
-        response = requests.post(url, files=files, data=data, timeout=25)
-        
-    if response.status_code == 403:
-        raise Exception("403: Chứng thư số của cán bộ này đã hết hạn hoặc bị thu hồi trên hệ thống CA!")
-    elif response.status_code != 200:
-        raise Exception(f"Lỗi hệ thống CA Server: {response.text}")
-        
-    res = response.json()
-    return {
-        "ciphertext": base64.b64decode(res["ciphertext_b64"]),
-        "encapsulated_key": base64.b64decode(res["encapsulated_key_b64"]),
-        "nonce": base64.b64decode(res["nonce_b64"]),
-        "kems_variant": res["kems_variant"],
-        "payload_cipher": res["payload_cipher"]
+    payload = {
+        "officer_id": str(officer_id),
+        "citizen_id": str(citizen_id),
+        "original_filename": original_filename,
+        "pdf_base64": pdf_base64
     }
+    response = requests.post(url, json=payload, timeout=30)
+    if response.status_code == 403:
+         raise Exception("403: Chứng thư số của cán bộ này đã hết hạn hoặc bị thu hồi trên hệ thống CA!")
+    elif response.status_code != 200:
+         raise Exception(f"Lỗi hệ thống CA Server: {response.text}")
+    return response.json()
 
 # --- DJANGO VIEWS ---
 
@@ -232,10 +162,6 @@ def about(request):
     return render(request, "app/about.html", {"title": "Giới thiệu", "year": datetime.now().year})
 
 def download_key(request):
-    """
-    Do đã nâng cấp lên chuẩn mật mã Zero-Trust, khóa riêng được mã hóa lưu trữ hoàn toàn cục bộ,
-    Django view này hiển thị thông báo hướng dẫn bảo quản thay vì cho phép tải file thô.
-    """
     return render(request, "app/download_key.html", {
         "title": "Tải khóa bảo mật",
         "message": "Cặp khóa PQC (ML-DSA / ML-KEM) của đồng chí đã được sinh ra trực tiếp và mã hóa lưu trữ an toàn dưới ổ đĩa cục bộ thông qua PQC Local Agent.",
@@ -384,20 +310,19 @@ def dashboard(request):
         },
     )
 
-# --- KHU VỰC API PROXY CHO LOCAL AGENT (KHÔNG CHO PHÉP LOCAL AGENT GỌI TRỰC TIẾP CA) ---
-
-@officer_ip_required
+# Cập nhật Decorator cho 2 proxy này để Agent có thể gọi không bị lỗi 403 CSRF hay Session Redirect
+@csrf_exempt
+@internal_ip_only
 def api_ca_public_key(request):
-    """Proxy hỗ trợ Local Agent lấy khóa công khai ML-KEM-1024 tối cao của CA."""
     try:
         r = requests.get("http://127.0.0.1:5001/master-public-key", timeout=10)
         return JsonResponse(r.json())
     except Exception as e:
         return JsonResponse({"detail": str(e)}, status=500)
 
-@officer_ip_required
+@csrf_exempt
+@internal_ip_only
 def api_ca_tsa(request):
-    """Proxy hỗ trợ Local Agent lấy dấu thời gian TSA từ máy chủ CA."""
     if request.method != "POST":
          return JsonResponse({"detail": "Method not allowed"}, status=405)
     try:
@@ -407,14 +332,8 @@ def api_ca_tsa(request):
     except Exception as e:
         return JsonResponse({"detail": str(e)}, status=500)
 
-# --- END OF PROXY ---
-
 @officer_ip_required
 def sign_document_view(request, doc_id):
-    """
-    View chuẩn hóa: Nhận khối dữ liệu mã hóa từ trình duyệt sau khi ký biên cục bộ,
-    chuyển tiếp sang CA Server xử lý giải mã, thẩm định 4 lớp và lưu trữ Cloud an toàn.
-    """
     document = _find_document(doc_id)
     if not document:
         messages.error(request, "Không tìm thấy hồ sơ!")
@@ -433,7 +352,6 @@ def sign_document_view(request, doc_id):
         return redirect("dashboard")
 
     if request.method == "POST":
-        # Nhận khối mật mã đã được ký và bảo vệ ngay tại Local Agent biên
         ciphertext_b64 = request.POST.get("ciphertext_base64")
         encapsulated_key_b64 = request.POST.get("encapsulated_key_base64")
         nonce_b64 = request.POST.get("nonce_base64")
@@ -443,7 +361,6 @@ def sign_document_view(request, doc_id):
             return redirect("sign_document", doc_id=doc_id)
 
         try:
-            # Chuyển tiếp luồng byte sang CA Server xử lý thẩm định 4 lớp trực tuyến
             ca_verify_url = "http://127.0.0.1:5001/verify-and-store-signed"
             payload = {
                 "doc_id": str(doc_id),
@@ -475,10 +392,6 @@ def sign_document_view(request, doc_id):
 
 @officer_ip_required
 def decrypt_application_view(request, doc_id):
-    """
-    View hướng dẫn và truyền metadata mã hóa xuống trình duyệt để người dùng 
-    tự gọi Local Agent giải mã tệp tin cục bộ, đạt chuẩn Zero-Trust tuyệt đối.
-    """
     document = _find_document(doc_id)
     if not document:
         messages.error(request, "Không tìm thấy hồ sơ cần giải mã.")
@@ -490,22 +403,12 @@ def decrypt_application_view(request, doc_id):
         return redirect("dashboard")
         
     metadata = document.get("pqc_encryption_metadata") or {}
-    encrypted_relative_path = metadata.get("ciphertext_path", "")
+    ciphertext_base64 = metadata.get("ciphertext_b64", "")
     encapsulated_key = metadata.get("encapsulated_key")
     nonce = metadata.get("nonce")
     
-    if not encrypted_relative_path or not encapsulated_key or not nonce:
+    if not ciphertext_base64 or not encapsulated_key or not nonce:
         messages.error(request, "Hồ sơ chưa có đầy đủ metadata mã hóa.")
-        return redirect("dashboard")
-        
-    # Đọc tệp mã hóa và chuyển base64 để truyền sang Client-side JS giải mã
-    try:
-        encrypted_path = os.path.join(settings.MEDIA_ROOT, encrypted_relative_path)
-        with open(encrypted_path, "rb") as f:
-            ciphertext_bytes = f.read()
-        ciphertext_base64 = base64.b64encode(ciphertext_bytes).decode("utf-8")
-    except Exception as e:
-        messages.error(request, f"Không thể đọc tệp mã hóa trên máy chủ: {e}")
         return redirect("dashboard")
 
     decryption_context = {
@@ -526,11 +429,6 @@ def decrypt_application_view(request, doc_id):
     )
 
 def download_signed_pdf(request, doc_id):
-    """
-    Tải tệp đã ký dạng luồng bảo mật (In-memory streaming):
-    Web server đọc thông tin mật mã từ MongoDB Atlas (không lưu file cục bộ),
-    gửi sang CA Server giải mã bằng khóa Master CA, trả trực tiếp ra HttpResponse.
-    """
     if "user" not in request.session:
         return redirect("login")
     document = _find_document(doc_id)
@@ -561,7 +459,6 @@ def download_signed_pdf(request, doc_id):
         raise Http404("Tài liệu chưa được ký số hoàn chỉnh.")
         
     try:
-        # Gửi dữ liệu mật mã sang CA Server giải mã trực tuyến trên RAM
         ca_decrypt_url = "http://127.0.0.1:5001/decrypt-pdf"
         payload = {
             "ciphertext_base64": ciphertext_b64,
@@ -572,7 +469,6 @@ def download_signed_pdf(request, doc_id):
         if res.status_code != 200:
             raise Exception(f"CA Server giải mã lỗi: {res.text}")
             
-        # Stream luồng byte thô trực tiếp cho người dùng, không tạo file vật lý trên Web đĩa cứng
         response = HttpResponse(res.content, content_type="application/pdf")
         response["Content-Disposition"] = f"attachment; filename=signed_{doc_id}.pdf"
         return response
@@ -581,10 +477,6 @@ def download_signed_pdf(request, doc_id):
         return redirect("dashboard")
 
 def verify_document_view(request):
-    """
-    Bộ máy kiểm tra chữ ký PQC trực tuyến trên Django Server.
-    Tận dụng tính khả dụng tối đa cho bất kỳ người dùng nào truy cập vào trang web.
-    """
     verification_result = None
     if request.method == "POST":
         pdf_file = request.FILES.get("pdf_file")
@@ -607,9 +499,35 @@ def verify_document_view(request):
                     file_hash = hash_pdf_pqc(temp_path)
                     cert_serial_str = str(cert_serial) if cert_serial else ""
                     
-                    # Truy vấn OCSP trực tuyến xác định trạng thái chứng thư
                     ocsp_status = "unknown"
-                    if cert_serial_str:
+                    signer_name = "N/A"
+                    tsa_time = "N/A"
+                    doc_hash_embedded = "N/A"
+                    
+                    if tsa_token_raw:
+                        try:
+                            tsa_str = str(tsa_token_raw).split("||")[0]
+                            tsa_data = json.loads(tsa_str)
+                            tsa_time = tsa_data.get("timestamp", "N/A")
+                            doc_hash_embedded = tsa_data.get("document_hash", "N/A")
+                        except Exception:
+                            pass
+
+                    doc_hash_matches = (doc_hash_embedded == file_hash.hex())
+                    signature_valid = False
+                    
+                    if cert_serial_str and db is not None:
+                        cert_doc = db.certificates.find_one({"serial_number": cert_serial_str})
+                        if cert_doc:
+                            signer_name = cert_doc.get("subject_dn", "N/A")
+                            try:
+                                officer_dsa_pk = bytes.fromhex(cert_doc["certificate_body"]["public_keys"]["ml_dsa_pk"])
+                                import oqs
+                                with oqs.Signature("ML-DSA-65") as verifier:
+                                    signature_valid = verifier.verify(file_hash, bytes.fromhex(str(signature_hex)), officer_dsa_pk)
+                            except Exception:
+                                pass
+                        
                         try:
                             ocsp_res = requests.post("http://127.0.0.1:5001/api/v1/ocsp", json={"serial_number": cert_serial_str}, timeout=5)
                             if ocsp_res.status_code == 200:
@@ -617,23 +535,34 @@ def verify_document_view(request):
                         except Exception:
                             pass
                             
+                    is_valid = signature_valid and doc_hash_matches and (ocsp_status == "valid")
+                    
                     verification_result = {
-                        "is_valid": True if ocsp_status == "valid" else False,
+                        "is_valid": is_valid,
                         "algorithm": "ML-DSA-65",
                         "hash_function": "SHAKE-256",
-                        "document_hash": file_hash.hex(),
+                        "document_hash": doc_hash_embedded,
+                        "actual_document_hash": file_hash.hex(),
                         "ocsp_status": ocsp_status,
-                        "tsa_info": str(tsa_token_raw) if tsa_token_raw else "N/A"
+                        "tsa_info": str(tsa_token_raw) if tsa_token_raw else "N/A",
+                        "signer_name": signer_name,
+                        "signed_at": tsa_time,
+                        "public_key_source": "CA Certificate Database",
+                        "document_hash_matches": "Khớp (True)" if doc_hash_matches else "Không khớp (False)",
+                        "signature_valid": "Hợp lệ (True)" if signature_valid else "Không hợp lệ (False)",
+                        "pqc_cert_serial": cert_serial_str
                     }
-                    if ocsp_status == "valid":
+                    
+                    if is_valid:
                         messages.success(request, "Xác minh tài liệu: Chữ ký số PQC và Dấu thời gian TSA hoàn toàn hợp lệ.")
                     else:
-                        messages.error(request, f"Chứng thư số tương ứng chữ ký này có trạng thái không hợp lệ: {ocsp_status}")
+                        messages.error(request, "Chữ ký không hợp lệ, tệp đã bị thay đổi, hoặc chứng thư đã bị thu hồi.")
             except Exception as e:
                 messages.error(request, f"Lỗi phân tích tệp tin: {e}")
             finally:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
+                    
     return render(
         request,
         "app/verify.html",
@@ -646,13 +575,11 @@ def upload_pdf(request):
         return redirect("login")
         
     active_officers = []
-    # Lấy danh sách cán bộ có chứng thư còn hạn dùng để mã hóa hồ sơ
     for user in db.users.find({"role": "officer", "pqc_status": "active"}):
         officer_key = db.officer_keys.find_one({"officer_id": user["_id"], "status": "active"})
         if officer_key:
             cert = db.certificates.find_one({"serial_number": officer_key.get("cert_serial"), "status": "valid"})
             if cert and cert.get("not_after") and datetime.utcnow() < cert.get("not_after"):
-                # KHẮC PHỤC: Chuyển đổi ObjectId thành chuỗi khóa "id" chuẩn hóa để template HTML đọc được
                 user["id"] = str(user["_id"])
                 user["ml_kem_pk_hex"] = officer_key.get("ml_kem_pk").hex() if officer_key.get("ml_kem_pk") else ""
                 active_officers.append(user)
@@ -665,59 +592,21 @@ def upload_pdf(request):
             messages.error(request, "Vui lòng điền đầy đủ thông tin tệp tin và cán bộ tiếp nhận.")
             return redirect("upload_pdf")
             
-        # 1. Lưu tạm tệp PDF gốc lên Web Server để chuẩn bị gửi sang CA
-        pdf_path, pdf_relative_path = _save_uploaded_file(uploaded_file, "uploaded_pdfs")
-        
-        # Tạo đường dẫn lưu tệp mã hóa .enc sau khi CA xử lý xong
-        encrypted_dir = os.path.join(settings.MEDIA_ROOT, "encrypted_uploads")
-        os.makedirs(encrypted_dir, exist_ok=True)
-        encrypted_file_name = f"{uuid.uuid4().hex}.enc"
-        encrypted_path = os.path.join(encrypted_dir, encrypted_file_name)
-        encrypted_relative_path = f"encrypted_uploads/{encrypted_file_name}"
-        
         try:
-            # 2. Truyền file thô sang CA Server xử lý kiểm định PKI và mã hóa
-            encryption_result = ca_encrypt_pdf(pdf_path, officer_id)
+            pdf_bytes = uploaded_file.read()
+            pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
             
-            # 3. Lưu trữ tệp tin đã mã hóa an toàn xuống ổ đĩa Web Server
-            with open(encrypted_path, "wb") as f:
-                f.write(encryption_result["ciphertext"])
-                
-            # Xóa tệp tin thô tạm thời ra khỏi Web Server để bảo mật
-            if os.path.exists(pdf_path):
-                os.remove(pdf_path)
-                
-            # 4. Ghi nhận thông tin hồ sơ và metadata mã hóa PQC vào MongoDB
-            application_doc = {
-                "citizen_id": _to_mongo_id(request.session.get("user_id")),
-                "assigned_officer_id": _to_mongo_id(officer_id),
-                "status": "submitted",
-                "submission_type": "unsigned",
-                "requires_officer_signature": True,
-                "pqc_encryption_metadata": {
-                    "ciphertext_path": encrypted_relative_path,
-                    "original_upload_path": pdf_relative_path,
-                    "encapsulated_key": encryption_result["encapsulated_key"].hex(),
-                    "kems_variant": encryption_result["kems_variant"],
-                    "payload_cipher": encryption_result["payload_cipher"],
-                    "nonce": encryption_result["nonce"].hex(),
-                },
-                "result_document": {
-                    "signed_ciphertext_path": None,
-                    "pqc_signature_id": None,
-                },
-                "created_at": datetime.utcnow(),
-            }
-            db.applications.insert_one(application_doc)
-            messages.success(request, "Hồ sơ đã được xác thực trạng thái chứng thư và mã hóa lưu trữ an toàn!")
+            ca_encrypt_pdf_in_memory(
+                pdf_base64=pdf_base64,
+                officer_id=officer_id,
+                citizen_id=request.session.get("user_id"),
+                original_filename=uploaded_file.name
+            )
+            
+            messages.success(request, "Hồ sơ đã được xác thực trạng thái chứng thư và mã hóa lưu trữ trực tiếp lên Atlas DB thành công!")
             return redirect("dashboard")
             
         except Exception as e:
-            # Xóa tệp tin thô tạm thời nếu xảy ra lỗi
-            if os.path.exists(pdf_path):
-                try: os.remove(pdf_path)
-                except Exception: pass
-            
             error_msg = str(e)
             if "403" in error_msg:
                 messages.error(request, "CA Server từ chối: Chứng thư số của Cán bộ này đã hết hạn hoặc bị thu hồi, không thể tiếp nhận hồ sơ!")
