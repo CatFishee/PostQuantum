@@ -4,70 +4,81 @@ import datetime
 import json
 import uuid
 import base64
-
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import JSONResponse, Response
+import hashlib
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Request, Response, Form
 from pydantic import BaseModel
 import uvicorn
 
+# Cấu hình nạp tệp DLL cục bộ trên Windows
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
     os.add_dll_directory(current_dir)
 os.environ['PATH'] = current_dir + os.pathsep + os.environ['PATH']
 
 import oqs
+import tempfile
 from db_connection import get_db
-from crypto_utils import (
-    aes_gcm_encrypt,
-    aes_gcm_decrypt,
-    encrypt_pdf_bytes_with_ml_kem,
-    decrypt_pdf_bytes_with_ml_kem,
-    sign_pdf_metadata,
-    verify_pdf_signature_metadata,
-)
+from crypto_utils import aes_gcm_encrypt, aes_gcm_decrypt
 
-try:
-    from bson import ObjectId
-except Exception:
-    ObjectId = None
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Quản lý vòng đời hiện đại: In Banner CA Server ra Terminal."""
+    print("\n" + "="*60)
+    print(" ██████╗ ██████╗      ██╗  ██╗███╗   ███╗███████╗")
+    print("██╔════╝██╔═══██╗     ██║ ██╔╝████╗ ████║██╔════╝")
+    print("██║     ██║   ██║     █████╔╝ ██╔████╔██║███████╗")
+    print("██║     ██║   ██║     ██╔═██╗ ██║╚██╔╝██║╚════██║")
+    print("╚██████╗╚██████╔╝     ██║  ██╗██║ ╚═╝ ██║███████║")
+    print(" ╚═════╝ ╚═════╝      ╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝")
+    print(" >> [SYSTEM STATE: CENTRAL CA-KMS & TSA SERVER IS RUNNING]")
+    print(" >> Port: 5001 | Endpoint: http://127.0.0.1:5001")
+    print("="*60 + "\n")
+    yield
 
-app = FastAPI(title="PQC CA-KMS Server")
+app = FastAPI(title="PQC CA-KMS & TSA Security Server", lifespan=lifespan)
 db = get_db()
 
 @app.middleware("http")
 async def ip_whitelist_middleware(request: Request, call_next):
     client_ip = request.client.host
+    # Thiết lập IP Whitelist nghiêm ngặt chỉ nhận kết nối của Web Server (Django)
     if client_ip not in ("127.0.0.1", "::1", "localhost"):
-        return JSONResponse(status_code=403, content={"detail": f"Forbidden IP: {client_ip}"})
+        return Response(status_code=403, content=f"Forbidden IP: {client_ip}")
     return await call_next(request)
 
-MASTER_PRIV_PATH = os.path.join(current_dir, "master_ca_private.key")
-MASTER_PUB_PATH = os.path.join(current_dir, "master_ca_public.key")
+# --- MÔ PHỎNG PKCS#11 SOFTHSM CHO KHÓA TỐI CAO CA & TSA ---
+CA_HSM_KEY_PATH = os.path.join(current_dir, "ca_hsm_secured.json")
+HSM_WRAP_KEY = hashlib.sha256(b"PQC_System_HSM_AES_Wrapping_Key").digest()
 
-def get_or_create_master_keys():
-    kem_alg = 'ML-KEM-1024'
-    if not os.path.exists(MASTER_PRIV_PATH):
-        with oqs.KeyEncapsulation(kem_alg) as kem:
-            public_key = kem.generate_keypair()
-            private_key = kem.export_secret_key()
-            with open(MASTER_PRIV_PATH, "wb") as f: f.write(private_key)
-            with open(MASTER_PUB_PATH, "wb") as f: f.write(public_key)
-    
-    with open(MASTER_PRIV_PATH, "rb") as f: priv = f.read()
-    with open(MASTER_PUB_PATH, "rb") as f: pub = f.read()
-    return pub, priv
+def load_or_create_hsm_pqc_keys():
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    aesgcm = AESGCM(HSM_WRAP_KEY)
+    if not os.path.exists(CA_HSM_KEY_PATH):
+        with oqs.KeyEncapsulation("ML-KEM-1024") as kem:
+            kem_pub = kem.generate_keypair()
+            kem_priv = kem.export_secret_key()
+        with oqs.Signature("ML-DSA-65") as dsa:
+            ca_pub = dsa.generate_keypair()
+            ca_priv = dsa.export_secret_key()
+            
+        payload = {
+            "ml_kem_priv": kem_priv.hex(),
+            "ml_kem_pub": kem_pub.hex(),
+            "ca_dsa_priv": ca_priv.hex(),
+            "ca_dsa_pub": ca_pub.hex()
+        }
+        nonce = os.urandom(12)
+        wrapped_data = aesgcm.encrypt(nonce, json.dumps(payload).encode("utf-8"), None)
+        with open(CA_HSM_KEY_PATH, "w") as f:
+            json.dump({"nonce": nonce.hex(), "blob": wrapped_data.hex()}, f)
 
-CA_MASTER_PUB, CA_MASTER_PRIV = get_or_create_master_keys()
+    with open(CA_HSM_KEY_PATH, "r") as f:
+        store = json.load(f)
+    decrypted_bytes = aesgcm.decrypt(bytes.fromhex(store["nonce"]), bytes.fromhex(store["blob"]), None)
+    return json.loads(decrypted_bytes.decode("utf-8"))
 
-def _to_object_id(value):
-    if ObjectId is None or not value:
-        return value
-    if isinstance(value, ObjectId):
-        return value
-    try:
-        return ObjectId(str(value))
-    except Exception:
-        return value
+CA_HSM_STORE = load_or_create_hsm_pqc_keys()
 
 class RegisterRequest(BaseModel):
     kem_ciphertext: str
@@ -75,20 +86,67 @@ class RegisterRequest(BaseModel):
     aes_tag: str
     encrypted_payload: str
 
-@app.get("/")
-def status():
-    return {"status": "CA-KMS Online", "database": "Connected" if db is not None else "Disconnected"}
+class TimestampRequest(BaseModel):
+    document_hash_hex: str
+
+class OCSPRequest(BaseModel):
+    serial_number: str
+
+def _to_object_id_local(value):
+    from bson import ObjectId
+    if not value: return value
+    try: return ObjectId(str(value))
+    except Exception: return value
+
+def verify_certificate_integrity(cert_doc: dict, ca_pub_key_hex: str) -> bool:
+    try:
+        cert_body = cert_doc.get("certificate_body")
+        ca_signature_hex = cert_doc.get("ca_signature_hex")
+        if not cert_body or not ca_signature_hex:
+            return False
+        cert_data_bytes = json.dumps(cert_body, sort_keys=True).encode("utf-8")
+        shake = hashlib.shake_256()
+        shake.update(cert_data_bytes)
+        cert_hash = shake.digest(32)
+        ca_pub_bytes = bytes.fromhex(ca_pub_key_hex)
+        ca_sig_bytes = bytes.fromhex(ca_signature_hex)
+        with oqs.Signature("ML-DSA-65") as verifier:
+            return bool(verifier.verify(cert_hash, ca_sig_bytes, ca_pub_bytes))
+    except Exception:
+        return False
+
+# --- HELPER BĂM PDF TRÊN TIẾN TRÌNH CA SERVER ---
+def hash_pdf_pqc_server(file_path: str) -> bytes:
+    from pikepdf import Pdf
+    shake = hashlib.shake_256()
+    with Pdf.open(file_path) as pdf:
+        shake.update(str(len(pdf.pages)).encode("utf-8"))
+        for page in pdf.pages:
+            try:
+                shake.update(str(page.obj.get("/MediaBox", "")).encode("utf-8", errors="ignore"))
+                contents = page.obj.get("/Contents")
+                if contents is not None:
+                    if hasattr(contents, "read_bytes"):
+                        shake.update(contents.read_bytes())
+                    elif contents.__class__.__name__ == "Array":
+                        for sub_obj in contents:
+                            if hasattr(sub_obj, "read_bytes"):
+                                shake.update(sub_obj.read_bytes())
+            except Exception:
+                pass
+    return shake.digest(32)
 
 @app.get("/master-public-key")
 def get_master_public_key():
-    return {"public_key": CA_MASTER_PUB.hex()}
+    return {"public_key": CA_HSM_STORE["ml_kem_pub"]}
 
 @app.post("/register_officer")
 def register_officer(req: RegisterRequest):
-    if db is None: 
+    if db is None:
         raise HTTPException(status_code=500, detail="Database Offline")
     try:
-        with oqs.KeyEncapsulation("ML-KEM-1024", secret_key=CA_MASTER_PRIV) as kem:
+        ca_kem_priv = bytes.fromhex(CA_HSM_STORE["ml_kem_priv"])
+        with oqs.KeyEncapsulation("ML-KEM-1024", secret_key=ca_kem_priv) as kem:
             shared_secret = kem.decap_secret(bytes.fromhex(req.kem_ciphertext))
         
         payload_bytes = aes_gcm_decrypt(
@@ -100,48 +158,63 @@ def register_officer(req: RegisterRequest):
         payload = json.loads(payload_bytes.decode('utf-8'))
         officer_id = payload.get("officer_id")
         username = payload.get("username")
-
-        with oqs.KeyEncapsulation("ML-KEM-768") as kem768:
-            kem_pub = kem768.generate_keypair()
-            kem_priv = kem768.export_secret_key()
-            
-        with oqs.Signature("ML-DSA-65") as dsa65:
-            dsa_pub = dsa65.generate_keypair()
-            dsa_priv = dsa65.export_secret_key()
+        
+        client_dsa_pk_hex = payload.get("ml_dsa_pk_hex")
+        client_kem_pk_hex = payload.get("ml_kem_pk_hex")
 
         cert_serial = str(uuid.uuid4())
-        _oid = ObjectId(officer_id) if ObjectId else officer_id
+        valid_from = datetime.datetime.now(datetime.timezone.utc)
+        valid_to = valid_from + datetime.timedelta(days=365)
         
-        officer_key_doc = {
-            "officer_id": _oid,
-            "ml_kem_pk": kem_pub,
-            "ml_dsa_pk": dsa_pub,
-            "key_level": "ML-DSA-65 & ML-KEM-768",
-            "cert_serial": cert_serial,
-            "status": "active",
-            "valid_until": datetime.datetime.utcnow() + datetime.timedelta(days=365)
-        }
-        db.officer_keys.insert_one(officer_key_doc)
-        
-        cert_doc = {
+        cert_data = {
             "serial_number": cert_serial,
             "subject_dn": f"CN={username}, OU=Officers, O=PQC-System",
-            "issuer_pqc_ca": "Issuing PQC CA v1",
+            "issuer_pqc_ca": "Issuing PQC CA v2 (ML-DSA-65)",
             "public_keys": {
-                "ml_kem_pk": kem_pub,
-                "ml_dsa_pk": dsa_pub
+                "ml_kem_pk": client_kem_pk_hex,
+                "ml_dsa_pk": client_dsa_pk_hex
             },
-            "status": "valid",
-            "not_before": datetime.datetime.utcnow(),
-            "not_after": datetime.datetime.utcnow() + datetime.timedelta(days=365)
+            "not_before": valid_from.isoformat().replace("+00:00", "Z"),
+            "not_after": valid_to.isoformat().replace("+00:00", "Z"),
+            "status": "valid"
+        }
+        
+        cert_data_bytes = json.dumps(cert_data, sort_keys=True).encode("utf-8")
+        ca_dsa_priv = bytes.fromhex(CA_HSM_STORE["ca_dsa_priv"])
+        
+        shake = hashlib.shake_256()
+        shake.update(cert_data_bytes)
+        cert_hash = shake.digest(32)
+        
+        with oqs.Signature("ML-DSA-65", secret_key=ca_dsa_priv) as ca_signer:
+            ca_signature = ca_signer.sign(cert_hash)
+
+        valid_from_naive = valid_from.replace(tzinfo=None)
+        valid_to_naive = valid_to.replace(tzinfo=None)
+
+        cert_doc = {
+            "serial_number": cert_serial,
+            "certificate_body": cert_data,
+            "ca_signature_hex": ca_signature.hex(),
+            "not_before": valid_from_naive,
+            "not_after": valid_to_naive,
+            "status": "valid"
         }
         db.certificates.insert_one(cert_doc)
 
-        response_dict = {
-            "ml_kem_priv": kem_priv.hex(),
-            "ml_dsa_priv": dsa_priv.hex()
-        }
-        resp_payload = json.dumps(response_dict).encode('utf-8')
+        from bson import ObjectId
+        db.officer_keys.update_one(
+            {"officer_id": ObjectId(officer_id)},
+            {"$set": {
+                "ml_kem_pk": bytes.fromhex(client_kem_pk_hex),
+                "ml_dsa_pk": bytes.fromhex(client_dsa_pk_hex),
+                "cert_serial": cert_serial,
+                "status": "active"
+            }},
+            upsert=True
+        )
+
+        resp_payload = json.dumps({"status": "success", "cert_serial": cert_serial}).encode('utf-8')
         iv, cipher, tag = aes_gcm_encrypt(shared_secret, resp_payload)
 
         return {
@@ -150,169 +223,267 @@ def register_officer(req: RegisterRequest):
             "encrypted_payload": cipher.hex()
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Registration failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Registration and certification issuing failed: {str(e)}")
 
-@app.post("/encrypt-pdf")
-async def encrypt_pdf(
-    officer_id: str = Form(...),
-    pdf_file: UploadFile = File(...),
+@app.post("/verify-and-store-signed")
+def verify_and_store_signed(
+    doc_id: str = Form(...),
+    signer_id: str = Form(...),
+    ciphertext_base64: str = Form(...),
+    encapsulated_key_base64: str = Form(...),
+    nonce_base64: str = Form(...)
 ):
+    """
+    Quy trình Thẩm định 4 Lớp Mật mã nghiêm ngặt tại CA Server:
+    1. Giải mã ML-KEM-1024 bảo vệ in-transit.
+    2. Xác minh chữ ký CA trên Chứng thư số cán bộ (Chống DB Tampering).
+    3. Kiểm tra tính hợp lệ và hạn dùng chứng thư cán bộ.
+    4. Xác minh toán học chữ ký số ML-DSA-65 của tệp PDF thô.
+    Sau khi hợp lệ:
+    - Mã hóa bảo vệ tĩnh tệp bằng chính khóa tối cao Master KEM của CA.
+    - Lưu trực tiếp khối mật mã tĩnh lên cơ sở dữ liệu MongoDB Atlas (Cloud).
+    - Tạo audit log.
+    """
     if db is None:
         raise HTTPException(status_code=500, detail="Database Offline")
-    try:
-        officer_key = db.officer_keys.find_one({
-            "officer_id": _to_object_id(officer_id),
-            "status": "active"
-        })
-        if not officer_key or not officer_key.get("ml_kem_pk"):
-            raise HTTPException(status_code=404, detail="Cán bộ chưa có ML-KEM public key active.")
-
-        # PKI VALIDATION: KỂM TRA CHỨNG THƯ KHI MÃ HÓA
-        cert = db.certificates.find_one({"serial_number": officer_key.get("cert_serial")})
-        if not cert or cert.get("status") != "valid" or (cert.get("not_after") and datetime.datetime.utcnow() > cert.get("not_after")):
-            raise HTTPException(status_code=403, detail="Chứng thư của cán bộ này đã hết hạn hoặc bị thu hồi, không thể nhận hồ sơ mới.")
-
-        pdf_bytes = await pdf_file.read()
-        result = encrypt_pdf_bytes_with_ml_kem(pdf_bytes, officer_key["ml_kem_pk"])
-
-        return {
-            "ciphertext_b64": base64.b64encode(result["ciphertext"]).decode("utf-8"),
-            "encapsulated_key_b64": base64.b64encode(result["encapsulated_key"]).decode("utf-8"),
-            "nonce_b64": base64.b64encode(result["nonce"]).decode("utf-8"),
-            "kems_variant": result["kems_variant"],
-            "payload_cipher": result["payload_cipher"],
-            "classical_public_key_algorithm": result["classical_public_key_algorithm"],
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Encrypt PDF failed: {str(e)}")
     
-@app.post("/decrypt-pdf")
-async def decrypt_pdf(
-    encrypted_file: UploadFile = File(...),
-    key_file: UploadFile = File(...),
-    encapsulated_key_b64: str = Form(...),
-    nonce_b64: str = Form(...),
-):
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     try:
-        # LƯU Ý: Không block theo hạn chứng thư ở đây vì Cán bộ được quyền giải mã hồ sơ cũ.
-        ciphertext = await encrypted_file.read()
-        key_json_text = (await key_file.read()).decode("utf-8")
-        key_data = json.loads(key_json_text)
+        # --- LỚP 1: GIẢI MÃ IN-TRANSIT PAYLOAD ---
+        ca_kem_priv = bytes.fromhex(CA_HSM_STORE["ml_kem_priv"])
+        ciphertext = base64.b64decode(ciphertext_base64)
+        enc_key = base64.b64decode(encapsulated_key_base64)
+        nonce = base64.b64decode(nonce_base64)
 
-        ml_kem_priv = (
-            key_data.get("ml_kem_priv") or key_data.get("ml_kem_sk") or key_data.get("ml_kem_private_key") or ""
-        )
-        if not ml_kem_priv:
-            raise HTTPException(status_code=400, detail="File key JSON không có ml_kem_priv.")
+        with oqs.KeyEncapsulation("ML-KEM-1024", secret_key=ca_kem_priv) as kem:
+            shared_secret = kem.decap_secret(enc_key)
 
-        plaintext_pdf = decrypt_pdf_bytes_with_ml_kem(
-            ciphertext,
-            base64.b64decode(encapsulated_key_b64),
-            base64.b64decode(nonce_b64),
-            bytes.fromhex("".join(str(ml_kem_priv).split())),
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        aes_key = shared_secret[:32]
+        aesgcm = AESGCM(aes_key)
+        decrypted_pdf = aesgcm.decrypt(nonce, ciphertext, None)
+
+        temp_file.write(decrypted_pdf)
+        temp_file.close()
+
+        # Đọc siêu dữ liệu chữ ký nhúng từ PDF thô vừa giải mã
+        from pikepdf import Pdf
+        with Pdf.open(temp_file.name) as pdf:
+            signed_flag = pdf.docinfo.get("/PQCSigned")
+            signature_hex = pdf.docinfo.get("/PQCSignature")
+            cert_serial = pdf.docinfo.get("/PQCCertSerial")
+            
+        if not signed_flag or not signature_hex or not cert_serial:
+            raise Exception("Tài liệu không chứa cấu trúc chữ ký PQC nhúng hợp lệ.")
+
+        cert_serial_str = str(cert_serial)
+        signature_hex_str = str(signature_hex)
+
+        # --- LỚP 2: TRUY VẤN VÀ XÁC MINH TOÀN VẸN CHỨNG THƯ (CHỐNG DB TAMPERING) ---
+        cert_doc = db.certificates.find_one({"serial_number": cert_serial_str})
+        if not cert_doc:
+            raise Exception("Không tìm thấy chứng thư số tương ứng trên hệ thống CA.")
+
+        if not verify_certificate_integrity(cert_doc, CA_HSM_STORE["ca_dsa_pub"]):
+            raise Exception("Phát hiện chứng thư số bị thay đổi trái phép ngoài cơ sở dữ liệu!")
+
+        # --- LỚP 3: KIỂM TRA HIỆU LỰC CHỨNG THƯ ---
+        if cert_doc.get("status") != "valid":
+            raise Exception("Chứng thư số của cán bộ ký đã bị thu hồi hoặc vô hiệu lực.")
+
+        if cert_doc.get("not_after") and datetime.datetime.utcnow() > cert_doc["not_after"]:
+            raise Exception("Chứng thư số của cán bộ ký đã hết hạn sử dụng.")
+
+        # --- LỚP 4: XÁC MINH TOÀN VẸN CHỮ KÝ SỐ TRÊN TỆP PDF ---
+        # Tính toán lại mã băm ổn định của tệp PDF thô
+        doc_hash_recalculated = hash_pdf_pqc_server(temp_file.name)
+        
+        # Lấy khóa công khai dsa của cán bộ từ thân chứng thư đã kiểm định toàn vẹn
+        officer_dsa_pk = bytes.fromhex(cert_doc["certificate_body"]["public_keys"]["ml_dsa_pk"])
+        sig_bytes = bytes.fromhex(signature_hex_str)
+
+        with oqs.Signature("ML-DSA-65") as verifier:
+            sig_valid = verifier.verify(doc_hash_recalculated, sig_bytes, officer_dsa_pk)
+            
+        if not sig_valid:
+            raise Exception("Mã băm chữ ký không khớp với nội dung tài liệu (Signature verification failed).")
+
+        # --- TÁI MÃ HÓA LƯU TRỮ TRỰC TIẾP LÊN CLOUD ATLAS DB (DÙNG MASTER KEM CỦA CA) ---
+        ca_kem_pub = bytes.fromhex(CA_HSM_STORE["ml_kem_pub"])
+        with oqs.KeyEncapsulation("ML-KEM-1024") as kem_storage:
+            enc_key_store, shared_secret_store = kem_storage.encap_secret(ca_kem_pub)
+
+        aes_key_store = shared_secret_store[:32]
+        aesgcm_store = AESGCM(aes_key_store)
+        nonce_store = os.urandom(12)
+        
+        # Mã hóa tệp đã được kiểm chứng
+        ciphertext_storage = aesgcm_store.encrypt(nonce_store, decrypted_pdf, None)
+
+        # Cập nhật trực tiếp kết quả mật mã tĩnh lên MongoDB Atlas
+        from bson import ObjectId
+        db.applications.update_one(
+            {"_id": ObjectId(doc_id)},
+            {"$set": {
+                "status": "processed",
+                "result_document": {
+                    "ciphertext_b64": base64.b64encode(ciphertext_storage).decode("utf-8"),
+                    "encapsulated_key_b64": base64.b64encode(enc_key_store).decode("utf-8"),
+                    "nonce_b64": base64.b64encode(nonce_store).decode("utf-8"),
+                }
+            }}
         )
+
+        # Tạo Audit Log toàn vẹn lưu trữ trực tiếp lên Atlas DB
+        db.audit_logs.insert_one({
+            "doc_id": ObjectId(doc_id),
+            "signer_id": ObjectId(signer_id),
+            "action": "verify_and_upload_signed_pdf",
+            "document_hash_hex": doc_hash_recalculated.hex(),
+            "cert_serial": cert_serial_str,
+            "status": "success",
+            "logged_at": datetime.datetime.utcnow()
+        })
+
+        return {"status": "success", "message": "Thẩm định chữ ký số hậu lượng tử và lưu trữ đám mây thành công."}
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Verify and Store Signed PDF failed: {str(e)}")
+    finally:
+        # Dọn dẹp bộ nhớ đệm tạm thời của CA Server
+        try:
+            if os.path.exists(temp_file.name):
+                os.remove(temp_file.name)
+        except Exception:
+            pass
+
+@app.post("/decrypt-pdf")
+def decrypt_pdf(
+    ciphertext_base64: str = Form(...),
+    encapsulated_key_base64: str = Form(...),
+    nonce_base64: str = Form(...)
+):
+    """
+    API hỗ trợ giải mã luồng byte trực tuyến bằng khóa riêng Master KEM của CA.
+    Dùng khi Django Web Server có phân quyền hợp lệ yêu cầu stream file cho người dùng tải.
+    """
+    try:
+        ca_kem_priv = bytes.fromhex(CA_HSM_STORE["ml_kem_priv"])
+        ciphertext = base64.b64decode(ciphertext_base64)
+        encapsulated_key = base64.b64decode(encapsulated_key_base64)
+        nonce = base64.b64decode(nonce_base64)
+
+        with oqs.KeyEncapsulation("ML-KEM-1024", secret_key=ca_kem_priv) as kem:
+            shared_secret = kem.decap_secret(encapsulated_key)
+
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        aes_key = shared_secret[:32]
+        aesgcm = AESGCM(aes_key)
+        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
 
         return Response(
-            content=plaintext_pdf,
+            content=plaintext,
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=decrypted.pdf"}
         )
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Decrypt PDF failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Decrypt master KEM failed: {str(e)}")
 
-@app.post("/sign-pdf")
-async def sign_pdf(
-    pdf_file: UploadFile = File(...),
-    key_file: UploadFile = File(...),
-    doc_id: str = Form(""),
-    signer_id: str = Form(""),
-    public_key_hex: str = Form(""),
-    pqc_cert_serial: str = Form(""),
-):
-    temp_input = None
-    temp_output = None
+@app.post("/tsa/timestamp")
+def generate_timestamp(req: TimestampRequest):
     try:
-        # PKI VALIDATION: KIỂM TRA CHỨNG THƯ KHI KÝ
-        if db is not None and pqc_cert_serial:
-            cert = db.certificates.find_one({"serial_number": pqc_cert_serial})
-            if not cert or cert.get("status") != "valid" or (cert.get("not_after") and datetime.datetime.utcnow() > cert.get("not_after")):
-                raise HTTPException(status_code=403, detail="Chứng thư số của đồng chí đã hết hạn hoặc bị thu hồi. Yêu cầu cấp mới khóa để tiếp tục ký.")
+        current_time = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        token_body = {
+            "document_hash": req.document_hash_hex,
+            "timestamp": current_time,
+            "tsa_name": "PQC Post-Quantum Time-Stamping Authority"
+        }
+        token_bytes = json.dumps(token_body, sort_keys=True).encode("utf-8")
+        
+        # Băm dấu thời gian bằng SHAKE-256 gốc
+        shake = hashlib.shake_256()
+        shake.update(token_bytes)
+        token_hash = shake.digest(32)
 
-        input_bytes = await pdf_file.read()
-        key_json_text = (await key_file.read()).decode("utf-8")
-        key_data = json.loads(key_json_text)
-
-        ml_dsa_priv = (
-            key_data.get("ml_dsa_priv") or key_data.get("ml_dsa_sk") or key_data.get("ml_dsa_private_key") or ""
-        )
-        ml_dsa_pub = (
-            key_data.get("ml_dsa_pk") or key_data.get("ml_dsa_pub") or key_data.get("ml_dsa_public_key") or public_key_hex or ""
-        )
-        if not ml_dsa_priv:
-            raise HTTPException(status_code=400, detail="File key JSON không có ml_dsa_priv.")
-
-        temp_input = os.path.join(current_dir, f"tmp_{uuid.uuid4().hex}.pdf")
-        temp_output = os.path.join(current_dir, f"tmp_signed_{uuid.uuid4().hex}.pdf")
-
-        with open(temp_input, "wb") as f:
-            f.write(input_bytes)
-
-        signature_result = sign_pdf_metadata(
-            temp_input,
-            temp_output,
-            ml_dsa_priv,
-            ml_dsa_pub,
-            signer_id=signer_id,
-            doc_id=doc_id,
-            sig_alg="ML-DSA-65",
-            pqc_cert_serial=pqc_cert_serial,
-        )
-
-        with open(temp_output, "rb") as f:
-            signed_pdf_bytes = f.read()
+        ca_dsa_priv = bytes.fromhex(CA_HSM_STORE["ca_dsa_priv"])
+        with oqs.Signature("ML-DSA-65", secret_key=ca_dsa_priv) as signer:
+            tsa_sig = signer.sign(token_hash)
 
         return {
-            "signed_pdf_b64": base64.b64encode(signed_pdf_bytes).decode("utf-8"),
-            "signature_result": signature_result,
+            "token_body": token_body,
+            "tsa_signature_hex": tsa_sig.hex()
         }
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Sign PDF failed: {str(e)}")
-    finally:
-        for path in (temp_input, temp_output):
-            try:
-                if path and os.path.exists(path):
-                    os.remove(path)
-            except Exception:
-                pass
+        raise HTTPException(status_code=400, detail=f"TSA Timestamp generation failed: {str(e)}")
 
-@app.post("/verify-pdf")
-async def verify_pdf(
-    pdf_file: UploadFile = File(...),
-):
-    temp_input = None
-    try:
-        input_bytes = await pdf_file.read()
-        temp_input = os.path.join(current_dir, f"tmp_verify_{uuid.uuid4().hex}.pdf")
+@app.post("/api/v1/ocsp")
+def check_ocsp(req: OCSPRequest):
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database Offline")
+        
+    cert = db.certificates.find_one({"serial_number": req.serial_number})
+    if not cert:
+        status = "unknown"
+    else:
+        # NÂNG CẤP AN NINH: Xác minh chữ ký CA trên tệp OCSP trước khi trả về trạng thái
+        if not verify_certificate_integrity(cert, CA_HSM_STORE["ca_dsa_pub"]):
+            status = "tampered"
+        else:
+            status = cert.get("status", "unknown")
+            if cert.get("not_after") and datetime.datetime.utcnow() > cert["not_after"]:
+                status = "expired"
 
-        with open(temp_input, "wb") as f:
-            f.write(input_bytes)
+    response_body = {
+        "serial_number": req.serial_number,
+        "status": status,
+        "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    }
+    
+    ca_dsa_priv = bytes.fromhex(CA_HSM_STORE["ca_dsa_priv"])
+    resp_bytes = json.dumps(response_body, sort_keys=True).encode("utf-8")
+    
+    # Băm kết quả OCSP bằng SHAKE-256 gốc
+    shake = hashlib.shake_256()
+    shake.update(resp_bytes)
+    resp_hash = shake.digest(32)
+    
+    with oqs.Signature("ML-DSA-65", secret_key=ca_dsa_priv) as signer:
+        sig = signer.sign(resp_hash)
 
-        result = verify_pdf_signature_metadata(temp_input)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Verify PDF failed: {str(e)}")
-    finally:
-        try:
-            if temp_input and os.path.exists(temp_input):
-                os.remove(temp_input)
-        except Exception:
-            pass
+    return {
+        "response": response_body,
+        "ca_signature_hex": sig.hex()
+    }
+
+@app.get("/api/v1/crl")
+def get_crl():
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database Offline")
+    
+    revoked_certs = list(db.certificates.find({"status": "revoked"}))
+    revoked_list = [c["serial_number"] for c in revoked_certs]
+    
+    crl_body = {
+        "issuer": "Issuing PQC CA v2",
+        "last_update": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "revoked_serials": revoked_list
+    }
+    
+    crl_bytes = json.dumps(crl_body, sort_keys=True).encode("utf-8")
+    
+    # Băm danh sách CRL bằng SHAKE-256 gốc
+    shake = hashlib.shake_256()
+    shake.update(crl_bytes)
+    crl_hash = shake.digest(32)
+    
+    ca_dsa_priv = bytes.fromhex(CA_HSM_STORE["ca_dsa_priv"])
+    with oqs.Signature("ML-DSA-65", secret_key=ca_dsa_priv) as signer:
+        sig = signer.sign(crl_hash)
+        
+    return {
+        "crl": crl_body,
+        "ca_signature_hex": sig.hex()
+    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=5001)

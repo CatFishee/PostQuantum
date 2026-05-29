@@ -1,593 +1,84 @@
-import datetime
-import hashlib
 import os
 import sys
-import uuid
+import json
+import hashlib
 import base64
-import requests
-
 from xml.etree import ElementTree
-
-_OQS_DLL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
-    os.add_dll_directory(_OQS_DLL_DIR)
-os.environ["PATH"] = _OQS_DLL_DIR + os.pathsep + os.environ.get("PATH", "")
-
-import oqs
+from pikepdf import Pdf, Name, Dictionary, String
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from pikepdf import Array, Dictionary, Pdf, Stream
 
-
-PQC_NAMESPACE = "https://postquantum.local/ns/pqc/1.0/"
-PDF_HASH_LENGTH = 32
-
-_PDF_HASH_SKIP_KEYS = {
-    "/DecodeParms",
-    "/Filter",
-    "/Length",
-    "/Metadata",
-    "/ModDate",
-    "/Parent",
-    "/PieceInfo",
-}
-
-
-# --- Hashing: SHAKE-256 ---
-def get_shake_256_hash(data: bytes, length: int = PDF_HASH_LENGTH):
-    return hashlib.shake_256(data).digest(length)
-
-
-def _safe_attr(value, name, default=None):
-    try:
-        return object.__getattribute__(value, name)
-    except Exception:
-        return default
-
-
-def _stable_pdf_update(shake, value, seen_objects):
-    objgen = _safe_attr(value, "objgen")
-    if objgen and objgen != (0, 0):
-        if objgen in seen_objects:
-            return
-        seen_objects.add(objgen)
-
-    page_obj = _safe_attr(value, "obj")
-    if page_obj is not None:
-        value = page_obj
-
-    if isinstance(value, Stream):
-        shake.update(b"<stream>")
-        try:
-            data = value.read_bytes()
-        except Exception:
-            data = value.read_raw_bytes()
-        shake.update(len(data).to_bytes(8, "big"))
-        shake.update(data)
-
-        for key in sorted(value.keys(), key=str):
-            key_text = str(key)
-            if key_text in _PDF_HASH_SKIP_KEYS:
-                continue
-            shake.update(key_text.encode("utf-8"))
-            _stable_pdf_update(shake, value[key], seen_objects)
-        return
-
-    if isinstance(value, Dictionary):
-        shake.update(b"<dict>")
-        for key in sorted(value.keys(), key=str):
-            key_text = str(key)
-            if key_text in _PDF_HASH_SKIP_KEYS:
-                continue
-            shake.update(key_text.encode("utf-8"))
-            _stable_pdf_update(shake, value[key], seen_objects)
-        return
-
-    if isinstance(value, Array):
-        shake.update(b"<array>")
-        for item in value:
-            _stable_pdf_update(shake, item, seen_objects)
-        return
-
-    if isinstance(value, (bytes, bytearray)):
-        shake.update(b"<bytes>")
-        shake.update(len(value).to_bytes(8, "big"))
-        shake.update(bytes(value))
-        return
-
-    text = str(value or "")
-    shake.update(b"<scalar>")
-    shake.update(text.encode("utf-8", errors="surrogatepass"))
-
-
-def hash_pdf_document_content(file_path):
-    """Hash noi dung trang PDF, bo qua metadata de verify sau khi da nhung chu ky."""
-    shake = hashlib.shake_256()
-    with Pdf.open(file_path) as pdf:
-        shake.update(f"pages:{len(pdf.pages)}".encode("utf-8"))
-        for index, page in enumerate(pdf.pages):
-            shake.update(f"page:{index}".encode("utf-8"))
-            _stable_pdf_update(shake, page, set())
-    return shake.digest(PDF_HASH_LENGTH)
-
-
-def hash_pdf(file_path):
-    return hash_pdf_document_content(file_path)
-
-
-def hash_pdf_hex(file_path):
-    return hash_pdf_document_content(file_path).hex()
-
-
-# --- AES-GCM cho Session Key (Kenh truyen Web <-> CA) ---
+# --- AES-GCM CHO SESSION KEY (Kênh truyền Web Server <-> CA Server) ---
 def aes_gcm_encrypt(key: bytes, plaintext: bytes) -> tuple[bytes, bytes, bytes]:
-    aesgcm = AESGCM(key[:32])
+    """Mã hóa đối xứng AES-GCM 256-bit sử dụng khóa phiên dẫn xuất từ KEM."""
+    aesgcm = AESGCM(key[:32])  # ML-KEM shared_secret là 32 bytes
     iv = os.urandom(12)
     ciphertext_with_tag = aesgcm.encrypt(iv, plaintext, None)
     ciphertext = ciphertext_with_tag[:-16]
     tag = ciphertext_with_tag[-16:]
     return iv, ciphertext, tag
 
-
 def aes_gcm_decrypt(key: bytes, iv: bytes, ciphertext: bytes, tag: bytes) -> bytes:
+    """Giải mã đối xứng AES-GCM 256-bit khôi phục dữ liệu ban đầu."""
     aesgcm = AESGCM(key[:32])
     return aesgcm.decrypt(iv, ciphertext + tag, None)
 
+# --- HASHING SHAKE-256 ---
+def get_shake_256_hash(data: bytes, length: int = 32) -> bytes:
+    """Băm dữ liệu sử dụng hàm băm hậu lượng tử SHAKE-256."""
+    return hashlib.shake_256(data).digest(length)
 
-# --- KEM Encapsulation cho Web gui len CA ---
-def web_encapsulate(ca_public_key: bytes):
-    with oqs.KeyEncapsulation("ML-KEM-1024") as kem:
-        ciphertext, shared_secret = kem.encap_secret(ca_public_key)
-        return ciphertext, shared_secret
+def hash_pdf_pqc(file_path: str) -> bytes:
+    """Băm ổn định nội dung tệp tin PDF tránh các cấu trúc chữ ký nhúng."""
+    shake = hashlib.shake_256()
+    with Pdf.open(file_path) as pdf:
+        shake.update(str(len(pdf.pages)).encode("utf-8"))
+        for page in pdf.pages:
+            try:
+                shake.update(str(page.obj.get("/MediaBox", "")).encode("utf-8", errors="ignore"))
+                # Đọc nội dung streams để băm
+                contents = page.obj.get("/Contents")
+                if contents is not None:
+                    if hasattr(contents, "read_bytes"):
+                        shake.update(contents.read_bytes())
+                    elif contents.__class__.__name__ == "Array":
+                        for sub_obj in contents:
+                            if hasattr(sub_obj, "read_bytes"):
+                                shake.update(sub_obj.read_bytes())
+            except Exception:
+                pass
+    return shake.digest(32)
 
-
-def _normalize_hex(hex_text: str) -> str:
-    text = "".join(str(hex_text or "").split())
-    return text[2:] if text.lower().startswith("0x") else text
-
-
-def _sign_with_private_key(message: bytes, private_key: bytes, sig_alg: str) -> bytes:
-    try:
-        with oqs.Signature(sig_alg, secret_key=private_key) as signer:
-            return signer.sign(message)
-    except TypeError:
-        with oqs.Signature(sig_alg) as signer:
-            return signer.sign(message, private_key)
-
-
-def _verify_with_public_key(message: bytes, signature: bytes, public_key: bytes, sig_alg: str) -> bool:
-    try:
-        with oqs.Signature(sig_alg) as verifier:
-            return bool(verifier.verify(message, signature, public_key))
-    except TypeError:
-        with oqs.Signature(sig_alg, public_key=public_key) as verifier:
-            return bool(verifier.verify(message, signature))
-
-
-def build_pqc_signature_xml(
-    *,
-    signature_id: str,
-    doc_id: str,
-    signer_id: str,
-    algorithm: str,
-    hash_function: str,
-    document_hash: str,
+# --- NHÚNG CHỮ KÝ SỐ & TIMESTAMP (PAdES Simulation) ---
+def embed_signature_and_timestamp(
+    input_pdf_path: str,
+    output_pdf_path: str,
     signature_hex: str,
-    public_key_hex: str,
-    signed_at: str,
-    pqc_cert_serial: str = "",
-) -> str:
-    root = ElementTree.Element("pqcSignature")
-    fields = {
-        "signatureId": signature_id,
-        "docId": doc_id,
-        "signerId": signer_id,
-        "algorithm": algorithm,
-        "hashFunction": hash_function,
-        "documentHash": document_hash,
-        "signatureValue": signature_hex,
-        "signerPublicKey": public_key_hex,
-        "pqcCertSerial": pqc_cert_serial,
-        "signedAt": signed_at,
-    }
-    for key, value in fields.items():
-        child = ElementTree.SubElement(root, key)
-        child.text = str(value or "")
-    return ElementTree.tostring(root, encoding="unicode")
-
-
-def sign_pdf_metadata(
-    input_pdf_path,
-    output_pdf_path,
-    private_key_hex,
-    public_key_hex="",
-    *,
-    signer_id="",
-    doc_id="",
-    sig_alg="ML-DSA-65",
-    pqc_cert_serial="",
+    tsa_token_json: dict,
+    tsa_signature_hex: str,
+    signer_cert_serial: str,
+    signer_pub_key_hex: str
 ):
-    private_key = bytes.fromhex(_normalize_hex(private_key_hex))
-    document_hash = hash_pdf_document_content(input_pdf_path)
-    document_hash_hex = document_hash.hex()
-    signature = _sign_with_private_key(document_hash, private_key, sig_alg)
-    signature_hex = signature.hex()
-
-    signed_at = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-    signature_id = str(uuid.uuid4())
-    hash_function = "SHAKE-256"
-
-    xmp_xml = build_pqc_signature_xml(
-        signature_id=signature_id,
-        doc_id=doc_id,
-        signer_id=signer_id,
-        algorithm=sig_alg,
-        hash_function=hash_function,
-        document_hash=document_hash_hex,
-        signature_hex=signature_hex,
-        public_key_hex=_normalize_hex(public_key_hex),
-        signed_at=signed_at,
-        pqc_cert_serial=pqc_cert_serial,
-    )
-
+    """
+    Giả lập nhúng thông tin chữ ký và TSA token vào cấu trúc từ điển chữ ký PDF 
+    tương đương định dạng chuẩn PAdES để đảm bảo tính sẵn sàng xác minh dài hạn.
+    """
     with Pdf.open(input_pdf_path) as pdf:
-        try:
-            with pdf.open_metadata(set_pikepdf_as_editor=False) as meta:
-                try:
-                    meta.register_xml_namespace("pqc", PQC_NAMESPACE)
-                except Exception:
-                    pass
-                meta["pqc:SignatureId"] = signature_id
-                meta["pqc:Algorithm"] = sig_alg
-                meta["pqc:HashFunction"] = hash_function
-                meta["pqc:DocumentHash"] = document_hash_hex
-                meta["pqc:SignatureValue"] = signature_hex
-                meta["pqc:SignerPublicKey"] = _normalize_hex(public_key_hex)
-                meta["pqc:PQCCertSerial"] = pqc_cert_serial
-                meta["pqc:SignatureXML"] = xmp_xml
-        except Exception:
-            pass
-        pdf.docinfo["/PQCSignatureXML"] = xmp_xml
+        sig_dict = Dictionary()
+        sig_dict.Type = Name.Sig
+        sig_dict.Filter = Name.PQC_Signature_Filter
+        sig_dict.SubFilter = Name.PQC_ML_DSA_65
+        
+        # Nhúng chữ ký, nhãn thời gian và thông tin chứng thư số trực tiếp vào cấu trúc chữ ký PDF
+        sig_dict.Contents = String(signature_hex)
+        sig_dict.TSAToken = String(f"{json.dumps(tsa_token_json)}||{tsa_signature_hex}")
+        sig_dict.CertSerial = String(signer_cert_serial)
+        sig_dict.SignerPublicKey = String(signer_pub_key_hex)
+        
+        # Nhúng vào cấu trúc danh mục chính tài liệu (Document Catalog / Document Info)
+        pdf.Catalog.get_or_create_dictionary(Name.AcroForm)
+        pdf.docinfo["/PQCSigned"] = "True"
+        pdf.docinfo["/PQCSignature"] = signature_hex
+        pdf.docinfo["/PQCTSA"] = String(f"{json.dumps(tsa_token_json)}||{tsa_signature_hex}")
+        pdf.docinfo["/PQCCertSerial"] = String(signer_cert_serial)
+        
         pdf.save(output_pdf_path)
-
-    return {
-        "signature_id": signature_id,
-        "algorithm": sig_alg,
-        "hash_function": hash_function,
-        "document_hash": document_hash_hex,
-        "signature_value": signature_hex,
-        "pqc_cert_serial": pqc_cert_serial,
-        "xmp_metadata_embedded": xmp_xml,
-        "signed_at": signed_at,
-        "output_pdf_path": output_pdf_path,
-    }
-
-
-def extract_pqc_signature_xml(pdf_path):
-    with Pdf.open(pdf_path) as pdf:
-        try:
-            with pdf.open_metadata(set_pikepdf_as_editor=False) as meta:
-                xml_text = meta.get("pqc:SignatureXML", "")
-                if xml_text:
-                    return str(xml_text)
-        except Exception:
-            pass
-
-        xml_text = pdf.docinfo.get("/PQCSignatureXML", "")
-        return str(xml_text or "")
-
-
-def _xml_local_name(tag):
-    return tag.rsplit("}", 1)[-1]
-
-
-def parse_pqc_signature_xml(xml_text):
-    if not xml_text:
-        raise ValueError("PDF không có metadata chữ ký PQC.")
-
-    root = ElementTree.fromstring(xml_text)
-    field_map = {
-        "signatureId": "signature_id",
-        "docId": "doc_id",
-        "signerId": "signer_id",
-        "algorithm": "algorithm",
-        "hashFunction": "hash_function",
-        "documentHash": "document_hash",
-        "signatureValue": "signature_value",
-        "signerPublicKey": "signer_public_key",
-        "pqcCertSerial": "pqc_cert_serial",
-        "signedAt": "signed_at",
-    }
-    values = {}
-    for child in list(root):
-        key = field_map.get(_xml_local_name(child.tag))
-        if key:
-            values[key] = (child.text or "").strip()
-    return values
-
-
-def read_pqc_signature_metadata(pdf_path):
-    xml_text = extract_pqc_signature_xml(pdf_path)
-    values = parse_pqc_signature_xml(xml_text)
-    values["xmp_metadata_embedded"] = xml_text
-    return values
-
-
-def verify_pdf_signature(pdf_path, public_key_hex=""):
-    metadata = read_pqc_signature_metadata(pdf_path)
-    algorithm = metadata.get("algorithm") or "ML-DSA-65"
-    expected_hash = _normalize_hex(metadata.get("document_hash", "")).lower()
-    actual_hash = hash_pdf_hex(pdf_path).lower()
-    public_key_hex = _normalize_hex(public_key_hex or metadata.get("signer_public_key", ""))
-
-    result = {
-        **metadata,
-        "algorithm": algorithm,
-        "actual_document_hash": actual_hash,
-        "document_hash_matches": bool(expected_hash and expected_hash == actual_hash),
-        "signature_valid": False,
-        "is_valid": False,
-        "error": "",
-    }
-
-    if not expected_hash:
-        result["error"] = "Metadata không có documentHash."
-        return result
-    if not result["document_hash_matches"]:
-        result["error"] = "documentHash không khớp với nội dung PDF hiện tại."
-        return result
-    if not public_key_hex:
-        result["error"] = "Không tìm thấy public key ML-DSA để verify."
-        return result
-
-    try:
-        signature = bytes.fromhex(_normalize_hex(metadata.get("signature_value", "")))
-        public_key = bytes.fromhex(public_key_hex)
-        result["signature_valid"] = _verify_with_public_key(
-            bytes.fromhex(expected_hash),
-            signature,
-            public_key,
-            algorithm,
-        )
-        result["is_valid"] = result["document_hash_matches"] and result["signature_valid"]
-    except Exception as exc:
-        result["error"] = str(exc)
-
-    return result
-
-def _bytes_from_mongo_binary(value):
-    """
-    Chuyen public key lay tu MongoDB ve dang bytes.
-
-    MongoDB co the luu key theo nhieu dang:
-    - bytes / bytearray
-    - Binary cua bson
-    - hex string
-    """
-    if value is None:
-        return b""
-
-    if isinstance(value, bytes):
-        return value
-
-    if isinstance(value, bytearray):
-        return bytes(value)
-
-    if isinstance(value, str):
-        text = "".join(value.split())
-        try:
-            return bytes.fromhex(text)
-        except ValueError:
-            return text.encode("utf-8")
-
-    try:
-        return bytes(value)
-    except Exception:
-        return b""
-
-
-def encrypt_pdf_with_ml_kem(input_pdf_path, output_encrypted_path, officer_ml_kem_public_key):
-    """
-    Ma hoa PDF theo huong post-quantum thuan o tang khoa cong khai.
-
-    - ML-KEM-768 dung de encapsulate shared secret cho can bo.
-    - AES-GCM dung de ma hoa noi dung PDF bang khoa phien sinh tu shared secret.
-    - Khong su dung RSA, ECC, ECDH, ECDSA hoac thuat toan khoa cong khai co dien.
-    """
-    public_key = _bytes_from_mongo_binary(officer_ml_kem_public_key)
-
-    if not public_key:
-        raise ValueError("Không tìm thấy ML-KEM public key của cán bộ.")
-
-    with open(input_pdf_path, "rb") as f:
-        plaintext = f.read()
-
-    with oqs.KeyEncapsulation("ML-KEM-768") as kem:
-        encapsulated_key, shared_secret = kem.encap_secret(public_key)
-
-    aes_key = shared_secret[:32]
-    aesgcm = AESGCM(aes_key)
-    nonce = os.urandom(12)
-
-    ciphertext = aesgcm.encrypt(nonce, plaintext, None)
-
-    output_dir = os.path.dirname(output_encrypted_path)
-    os.makedirs(output_dir, exist_ok=True)
-
-    with open(output_encrypted_path, "wb") as f:
-        f.write(ciphertext)
-
-    return {
-        "ciphertext_path": output_encrypted_path,
-        "encapsulated_key": encapsulated_key,
-        "kems_variant": "ML-KEM-768",
-        "payload_cipher": "AES-256-GCM",
-        "nonce": nonce,
-    }
-
-def decrypt_pdf_with_ml_kem(
-    encrypted_pdf_path,
-    output_pdf_path,
-    encapsulated_key,
-    nonce,
-    officer_ml_kem_private_key,
-):
-    """
-    Giai ma PDF theo huong post-quantum o tang khoa cong khai.
-
-    - ML-KEM-768 dung de decapsulate shared secret bang private key cua can bo.
-    - AES-GCM dung de giai ma noi dung PDF bang khoa phien sinh tu shared secret.
-    - Khong su dung RSA, ECC, ECDH, ECDSA hoac thuat toan khoa cong khai co dien.
-    """
-    private_key = _bytes_from_mongo_binary(officer_ml_kem_private_key)
-    encapsulated_key_bytes = _bytes_from_mongo_binary(encapsulated_key)
-    nonce_bytes = _bytes_from_mongo_binary(nonce)
-
-    if not private_key:
-        raise ValueError("Không tìm thấy ML-KEM private key của cán bộ.")
-
-    if not encapsulated_key_bytes:
-        raise ValueError("Hồ sơ không có encapsulated_key.")
-
-    if not nonce_bytes:
-        raise ValueError("Hồ sơ không có nonce.")
-
-    with open(encrypted_pdf_path, "rb") as f:
-        ciphertext = f.read()
-
-    with oqs.KeyEncapsulation("ML-KEM-768", secret_key=private_key) as kem:
-        shared_secret = kem.decap_secret(encapsulated_key_bytes)
-
-    aes_key = shared_secret[:32]
-    aesgcm = AESGCM(aes_key)
-
-    plaintext = aesgcm.decrypt(nonce_bytes, ciphertext, None)
-
-    output_dir = os.path.dirname(output_pdf_path)
-    os.makedirs(output_dir, exist_ok=True)
-
-    with open(output_pdf_path, "wb") as f:
-        f.write(plaintext)
-
-    return {
-        "decrypted_path": output_pdf_path,
-        "kems_variant": "ML-KEM-768",
-        "payload_cipher": "AES-256-GCM",
-    }
-
-CA_BASE_URL = "http://127.0.0.1:5001"
-
-
-def _to_base64(value):
-    if value is None:
-        return ""
-
-    if isinstance(value, str):
-        try:
-            return base64.b64encode(bytes.fromhex(value)).decode("utf-8")
-        except Exception:
-            return base64.b64encode(value.encode("utf-8")).decode("utf-8")
-
-    return base64.b64encode(bytes(value)).decode("utf-8")
-
-
-def ca_encrypt_pdf(pdf_path, officer_id):
-    with open(pdf_path, "rb") as pdf_f:
-        files = {
-            "pdf_file": (os.path.basename(pdf_path), pdf_f, "application/pdf")
-        }
-        data = {
-            "officer_id": str(officer_id)
-        }
-
-        response = requests.post(
-            f"{CA_BASE_URL}/encrypt-pdf",
-            files=files,
-            data=data,
-            timeout=60,
-        )
-
-    response.raise_for_status()
-    result = response.json()
-
-    return {
-        "ciphertext": base64.b64decode(result["ciphertext_b64"]),
-        "encapsulated_key": base64.b64decode(result["encapsulated_key_b64"]),
-        "nonce": base64.b64decode(result["nonce_b64"]),
-        "kems_variant": result.get("kems_variant", "ML-KEM-768"),
-        "payload_cipher": result.get("payload_cipher", "AES-256-GCM"),
-        "classical_public_key_algorithm": result.get("classical_public_key_algorithm"),
-    }
-
-
-def ca_decrypt_pdf(encrypted_path, key_file_path, encapsulated_key, nonce):
-    with open(encrypted_path, "rb") as enc_f, open(key_file_path, "rb") as key_f:
-        files = {
-            "encrypted_file": (os.path.basename(encrypted_path), enc_f, "application/octet-stream"),
-            "key_file": (os.path.basename(key_file_path), key_f, "application/json"),
-        }
-        data = {
-            "encapsulated_key_b64": _to_base64(encapsulated_key),
-            "nonce_b64": _to_base64(nonce),
-        }
-
-        response = requests.post(
-            f"{CA_BASE_URL}/decrypt-pdf",
-            files=files,
-            data=data,
-            timeout=60,
-        )
-
-    response.raise_for_status()
-    return response.content
-
-
-def ca_verify_pdf(pdf_path):
-    with open(pdf_path, "rb") as pdf_f:
-        files = {
-            "pdf_file": (os.path.basename(pdf_path), pdf_f, "application/pdf")
-        }
-
-        response = requests.post(
-            f"{CA_BASE_URL}/verify-pdf",
-            files=files,
-            timeout=60,
-        )
-
-    response.raise_for_status()
-    return response.json()
-
-
-def ca_sign_pdf(
-    pdf_path,
-    key_file_path,
-    doc_id="",
-    signer_id="",
-    public_key_hex="",
-    pqc_cert_serial="",
-):
-    with open(pdf_path, "rb") as pdf_f, open(key_file_path, "rb") as key_f:
-        files = {
-            "pdf_file": (os.path.basename(pdf_path), pdf_f, "application/pdf"),
-            "key_file": (os.path.basename(key_file_path), key_f, "application/json"),
-        }
-        data = {
-            "doc_id": str(doc_id or ""),
-            "signer_id": str(signer_id or ""),
-            "public_key_hex": public_key_hex or "",
-            "pqc_cert_serial": pqc_cert_serial or "",
-        }
-
-        response = requests.post(
-            f"{CA_BASE_URL}/sign-pdf",
-            files=files,
-            data=data,
-            timeout=60,
-        )
-
-    response.raise_for_status()
-    result = response.json()
-
-    return {
-        "signed_pdf": base64.b64decode(result["signed_pdf_b64"]),
-        "signature_result": result["signature_result"],
-    }

@@ -5,7 +5,7 @@
 
 {% if document %}
 <div class="alert alert-info">
-    <strong>Hồ sơ:</strong> {{ document.id }}
+    <strong>Hồ sơ giải mã:</strong> {{ document.id }}
     &nbsp;&nbsp;
     <strong>Người dân:</strong> {{ document.citizen_id }}
     &nbsp;&nbsp;
@@ -13,47 +13,81 @@
 </div>
 {% endif %}
 
-{% if messages %}
-<div class="messages">
-    {% for message in messages %}
-    <div class="alert alert-{{ message.tags|default:'info' }}">{{ message }}</div>
-    {% endfor %}
-</div>
-{% endif %}
-
-<form method="post" enctype="multipart/form-data">
-    {% csrf_token %}
-
-    <div class="mb-3">
-        <label class="form-label">{{ form.key_file.label }}</label>
-        {{ form.key_file }}
+<div class="card shadow-sm p-4 mt-3">
+    <div class="mb-3 p-3 bg-light rounded" style="border: 1px dashed #0d6efd;">
+        <label class="form-label fw-bold text-primary"><i class="fas fa-lock-open"></i> Nhập mật khẩu mở khóa giải mã</label>
+        <input type="password" id="passphrase" class="form-control" placeholder="Nhập mật khẩu khóa riêng ML-KEM-768 của đồng chí" required>
         <div class="form-text">
-            Upload file JSON của cán bộ, trong đó có khóa <code>ml_kem_priv</code>.
+            Tài liệu được tải xuống và giải mã hoàn toàn trong thiết bị cục bộ của đồng chí nhằm đảm bảo không lộ thông tin thô ra ngoài mạng.
         </div>
-        {% for error in form.key_file.errors %}
-        <div class="text-danger">{{ error }}</div>
-        {% endfor %}
     </div>
 
-    <button type="submit" class="btn btn-primary">
-        Giải mã hồ sơ
-    </button>
-
-    <a href="{% url 'dashboard' %}" class="btn btn-secondary">
-        Quay lại dashboard
-    </a>
-</form>
-
-{% if decrypted_url %}
-<hr>
-<div class="alert alert-success">
-    Hồ sơ đã được giải mã thành công.
+    <div>
+        <button type="button" onclick="performLocalDecrypt()" class="btn btn-primary">
+            <i class="fas fa-unlock"></i> Giải mã hồ sơ cục bộ
+        </button>
+        <a href="{% url 'dashboard' %}" class="btn btn-secondary ms-2">Quay lại dashboard</a>
+    </div>
 </div>
 
-<p>
-    <a class="btn btn-success" href="{{ decrypted_url }}" target="_blank">
-        Tải / xem PDF đã giải mã
-    </a>
-</p>
-{% endif %}
+<script>
+    async function performLocalDecrypt() {
+        var passphrase = document.getElementById('passphrase').value;
+        if (!passphrase) {
+            alert("Vui lòng cung cấp mật khẩu mở khóa riêng ML-KEM cục bộ của cán bộ!");
+            return;
+        }
+
+        // Đọc khối dữ liệu mã hóa thô được Django Server truyền an toàn xuống giao diện
+        var ciphertextB64 = "{{ decryption_context.ciphertext_base64|default:'' }}";
+        var encapsulatedKeyB64 = "{{ decryption_context.encapsulated_key_base64|default:'' }}";
+        var nonceB64 = "{{ decryption_context.nonce_base64|default:'' }}";
+
+        if (!ciphertextB64 || !encapsulatedKeyB64 || !nonceB64) {
+            alert("Dữ liệu mật mã hóa của hồ sơ truyền xuống không đầy đủ.");
+            return;
+        }
+
+        try {
+            // Giao tiếp Local Agent để giải bao đóng KEM và khôi phục PDF thô gốc
+            let response = await fetch("http://127.0.0.1:54321/api/decrypt-pdf", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    ciphertext_base64: ciphertextB64,
+                    encapsulated_key_base64: encapsulatedKeyB64,
+                    nonce_base64: nonceB64,
+                    passphrase: passphrase
+                })
+            });
+            let result = await response.json();
+            if (response.ok) {
+                // Chuyển kết quả base64 nhận được thành Blob và tạo URL để cán bộ tải trực tuyến về máy
+                var pdfBytes = atob(result.pdf_base64);
+                var byteNumbers = new Array(pdfBytes.length);
+                for (var i = 0; i < pdfBytes.length; i++) {
+                    byteNumbers[i] = pdfBytes.charCodeAt(i);
+                }
+                var byteArray = new Uint8Array(byteNumbers);
+                var blob = new Blob([byteArray], {type: "application/pdf"});
+                var url = URL.createObjectURL(blob);
+
+                // Giả lập click tải tệp tin PDF thô đã giải mã xuống máy cán bộ
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = "Decrypted_Doc_" + "{{ document.id }}" + ".pdf";
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                alert("Giải mã thành công! Tệp tin PDF gốc đã được giải mật mã và tải xuống máy cục bộ.");
+            } else {
+                alert("Lỗi giải mã tại Local Agent (Có thể sai mật khẩu khóa riêng): " + result.detail);
+            }
+        } catch (err) {
+            alert("Không thể kết nối đến PQC Local Agent. Vui lòng đảm bảo tệp pqc_agent.py đang chạy.");
+        }
+    }
+</script>
 {% endblock %}

@@ -7,6 +7,8 @@ Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "PublicAdminWeb", "PublicAdm
 EndProject
 Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "CA-KMS Server", "CA-KMS Server\CA-KMS Server.pyproj", "{F25919E6-5DFD-446B-935A-E6EDD2E297CA}"
 EndProject
+Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "pqc_agent", "pqc_agent\pqc_agent.pyproj", "{61D10A2D-3895-489F-BCF7-7D2D3AB80039}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -19,6 +21,8 @@ Global
 		{341E8AB8-2C39-499E-AF04-6ED48564E638}.Release|Any CPU.Build.0 = Release|Any CPU
 		{F25919E6-5DFD-446B-935A-E6EDD2E297CA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{F25919E6-5DFD-446B-935A-E6EDD2E297CA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{61D10A2D-3895-489F-BCF7-7D2D3AB80039}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{61D10A2D-3895-489F-BCF7-7D2D3AB80039}.Release|Any CPU.ActiveCfg = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

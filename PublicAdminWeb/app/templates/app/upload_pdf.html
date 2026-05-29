@@ -5,48 +5,43 @@
     <div class="card shadow-sm p-4">
         <h2 class="mb-3">Upload hồ sơ PDF</h2>
         <p class="text-muted">
-            Người dân upload file PDF hồ sơ và chọn cán bộ xử lý.
+            Người dân thực hiện tải lên tệp tin PDF hồ sơ thô và chọn cán bộ tiếp nhận. Hệ thống sẽ tự động kiểm tra chứng thư của cán bộ và mã hóa an toàn tại Server trước khi lưu trữ.
         </p>
 
         {% if messages %}
             {% for message in messages %}
-                <div class="alert alert-info">{{ message }}</div>
+                <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags }}{% endif %} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
             {% endfor %}
         {% endif %}
 
-        <form method="post" enctype="multipart/form-data">
+        <form method="post" enctype="multipart/form-data" action="{% url 'upload_pdf' %}">
             {% csrf_token %}
 
             <div class="mb-3">
-                 <label class="form-label">{{ form.upload_type.label }}</label>
-                 {{ form.upload_type }}
-                 {% for error in form.upload_type.errors %}
-                    <div class="text-danger">{{ error }}</div>
-                 {% endfor %}
+                <label class="form-label fw-bold">Tệp tin hồ sơ gốc (PDF chưa ký)</label>
+                <input type="file" name="pdf_file" class="form-control" accept="application/pdf" required>
             </div>
 
             <div class="mb-3">
-                <label class="form-label">{{ form.pdf_file.label }}</label>
-                {{ form.pdf_file }}
-                {% for error in form.pdf_file.errors %}
-                    <div class="text-danger">{{ error }}</div>
-                {% endfor %}
-            </div>
-
-            <div class="mb-3">
-                <label class="form-label">{{ form.officer_id.label }}</label>
-                {{ form.officer_id }}
-                {% for error in form.officer_id.errors %}
-                    <div class="text-danger">{{ error }}</div>
-                {% endfor %}
+                <label class="form-label fw-bold">Chọn cán bộ giải quyết hồ sơ</label>
+                <select name="officer_id" class="form-select" required>
+                    <option value="">-- Chọn Cán bộ cơ quan xử lý --</option>
+                    {% for officer in officers %}
+                        <option value="{{ officer.id }}">{{ officer.full_name }} ({{ officer.username }})</option>
+                    {% endfor %}
+                </select>
+                <small class="text-muted mt-1 d-block">
+                    <i class="fas fa-info-circle"></i> Máy chủ CA sẽ kiểm tra tính hiệu lực chứng thư số của cán bộ này trước khi tiến hành mã hóa bảo vệ hồ sơ.
+                </small>
             </div>
 
             <button type="submit" class="btn btn-primary">
-                Upload hồ sơ
+                <i class="fas fa-upload"></i> Nộp và Mã hóa hồ sơ
             </button>
-            <a href="{% url 'dashboard' %}" class="btn btn-secondary">
-                Quay lại dashboard
-            </a>
+            <a href="{% url 'dashboard' %}" class="btn btn-secondary">Quay lại dashboard</a>
         </form>
     </div>
 </div>

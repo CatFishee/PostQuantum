@@ -9,10 +9,8 @@
             </div>
             <div class="card-body p-4">
 
-                <!-- Hiển thị thông báo (Thành công / Thất bại) -->
                 {% if messages %}
                 {% for message in messages %}
-                <!-- Nếu message là lỗi, in màu đỏ (danger), thành công in màu xanh (success) -->
                 <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags }}{% endif %} alert-dismissible fade show shadow-sm" role="alert">
                     <i class="fas fa-info-circle"></i> {{ message }}
                     <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
@@ -20,8 +18,12 @@
                 {% endfor %}
                 {% endif %}
 
-                <form method="POST" action="{% url 'register' %}">
+                <form id="registerForm" method="POST" action="{% url 'register' %}">
                     {% csrf_token %}
+
+                    <!-- Khóa công khai ẩn gửi lên Server -->
+                    <input type="hidden" name="ml_dsa_pk_hex" id="ml_dsa_pk_hex">
+                    <input type="hidden" name="ml_kem_pk_hex" id="ml_kem_pk_hex">
 
                     <div class="mb-3">
                         <label class="form-label fw-bold">Họ và tên</label>
@@ -40,23 +42,31 @@
                     </div>
 
                     <div class="mb-3">
-                        <label class="form-label fw-bold">Mật khẩu</label>
+                        <label class="form-label fw-bold">Mật khẩu hệ thống</label>
                         <div class="input-group">
                             <span class="input-group-text"><i class="fas fa-lock"></i></span>
-                            <input type="password" name="password" class="form-control" placeholder="Nhập mật khẩu an toàn" required>
+                            <input type="password" name="password" class="form-control" placeholder="Mật khẩu đăng nhập" required>
                         </div>
                     </div>
 
-                    <div class="mb-4">
-                        <label class="form-label fw-bold">Vai trò</label>
-                        <select name="role" class="form-select" required>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Vai trò thành viên</label>
+                        <select name="role" id="roleSelect" class="form-select" required>
                             <option value="citizen" selected>Người dân / Doanh nghiệp</option>
                             <option value="officer">Cán bộ cơ quan Nhà nước</option>
                         </select>
-                        <small class="text-muted mt-1 d-block"><i class="fas fa-info-circle"></i> Nếu chọn "Cán bộ", hệ thống sẽ tự động liên kết với CA Server để cấp khóa sinh trắc (PQC Keys).</small>
                     </div>
 
-                    <button type="submit" class="btn btn-primary w-100 py-2 fs-5 fw-bold shadow-sm">
+                    <!-- Khung nhập Passphrase cho cán bộ -->
+                    <div class="mb-4 p-3 bg-light rounded" id="passphraseSection" style="display:none; border: 1px dashed #ced4da;">
+                        <label class="form-label fw-bold text-primary"><i class="fas fa-key"></i> Mật khẩu bảo mật khóa PQC cục bộ</label>
+                        <input type="password" id="passphrase" class="form-control" placeholder="Mật khẩu này dùng mã hóa lưu trữ khóa riêng tại Client">
+                        <small class="text-muted d-block mt-1">
+                            <i class="fas fa-exclamation-triangle"></i> Khóa riêng của cán bộ sẽ được mã hóa và lưu an toàn hoàn toàn tại Client Agent. Máy chủ hoàn toàn không biết khóa bí mật này.
+                        </small>
+                    </div>
+
+                    <button type="button" onclick="handleRegistration()" class="btn btn-primary w-100 py-2 fs-5 fw-bold shadow-sm">
                         <i class="fas fa-check-circle"></i> Xác nhận Đăng ký
                     </button>
                 </form>
@@ -70,4 +80,43 @@
         </div>
     </div>
 </div>
+
+<script>
+    document.getElementById('roleSelect').addEventListener('change', function() {
+        var section = document.getElementById('passphraseSection');
+        section.style.display = (this.value === 'officer') ? 'block' : 'none';
+    });
+
+    async function handleRegistration() {
+        var role = document.getElementById('roleSelect').value;
+        if (role === 'officer') {
+            var passphrase = document.getElementById('passphrase').value;
+            if(!passphrase) {
+                alert("Đồng chí vui lòng nhập mật khẩu bảo mật khóa cục bộ để Agent sinh cặp khóa PQC!");
+                return;
+            }
+
+            // Gọi Agent sinh khóa ngầm dưới Client
+            try {
+                let response = await fetch("http://127.0.0.1:54321/api/generate-keys", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ passphrase: passphrase })
+                });
+                let result = await response.json();
+                if (response.ok) {
+                    document.getElementById('ml_dsa_pk_hex').value = result.ml_dsa_pk_hex;
+                    document.getElementById('ml_kem_pk_hex').value = result.ml_kem_pk_hex;
+                } else {
+                    alert("Lỗi tạo khóa tại PQC Local Agent: " + result.detail);
+                    return;
+                }
+            } catch (err) {
+                alert("Không thể kết nối đến PQC Local Agent cục bộ. Vui lòng đảm bảo dịch vụ pqc_agent.py đang hoạt động trên máy của bạn!");
+                return;
+            }
+        }
+        document.getElementById('registerForm').submit();
+    }
+</script>
 {% endblock %}
