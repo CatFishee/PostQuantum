@@ -21,6 +21,12 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 
+DEFAULT_DJANGO_HOST = os.getenv("PUBLIC_PORTAL_ORIGIN", "https://thanhthuydepgai.42web.io")
+AGENT_ALLOWED_ORIGIN_REGEX = os.getenv(
+    "AGENT_ALLOWED_ORIGIN_REGEX",
+    r"https?://(localhost|127\.0\.0\.1|thanhthuydepgai\.42web\.io)(:\d+)?"
+)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("\n" + "="*60)
@@ -33,7 +39,7 @@ app = FastAPI(title="PQC Local Client Agent", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origin_regex=AGENT_ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -47,7 +53,7 @@ class KeyGenRequest(BaseModel):
 class SignAndEncryptRequest(BaseModel):
     pdf_base64: str
     passphrase: str
-    django_host: str = "http://127.0.0.1:8000"
+    django_host: str = DEFAULT_DJANGO_HOST
     cert_serial: str
     signer_id: str
 
