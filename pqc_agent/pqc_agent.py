@@ -50,6 +50,10 @@ KEY_STORE_PATH = os.path.join(current_dir, "pqc_private_keys.enc")
 class KeyGenRequest(BaseModel):
     passphrase: str
 
+class DeviceProofRequest(BaseModel):
+    passphrase: str
+    challenge: str
+
 class SignAndEncryptRequest(BaseModel):
     pdf_base64: str
     passphrase: str
@@ -183,6 +187,24 @@ def generate_keys(req: KeyGenRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi tạo khóa cục bộ: {str(e)}")
+
+@app.post("/api/device-proof")
+def device_proof(req: DeviceProofRequest):
+    try:
+        keys = _load_decrypted_private_keys(req.passphrase)
+        dsa_priv = bytes.fromhex(keys["ml_dsa_priv_hex"])
+        with oqs.Signature("ML-DSA-65", secret_key=dsa_priv) as signer:
+            signature = signer.sign(req.challenge.encode("utf-8"))
+        return {
+            "status": "success",
+            "algorithm": "ML-DSA-65",
+            "signature_hex": signature.hex(),
+            "ml_dsa_pk_hex": keys.get("ml_dsa_pub_hex", "")
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi ký thử thách thiết bị: {str(e)}")
 
 @app.post("/api/sign-and-encrypt")
 def sign_and_encrypt(req: SignAndEncryptRequest):

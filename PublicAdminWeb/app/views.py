@@ -1,8 +1,9 @@
 import os
 import uuid
 import json
-import ipaddress
 import base64
+import secrets
+import time
 import requests
 from datetime import datetime
 
@@ -86,35 +87,40 @@ def _load_ciphertext_base64(doc_id, metadata, encrypted_blob_endpoint):
     response.raise_for_status()
     return response.json().get("ciphertext_base64", "")
 
-def get_client_ip(request):
-    return request.META.get('REMOTE_ADDR', '127.0.0.1')
+def _active_officer_key_for_session(request):
+    user_id = request.session.get("user_id")
+    if not user_id or db is None:
+        return None
+    return db.officer_keys.find_one({
+        "officer_id": _to_mongo_id(user_id),
+        "status": "active"
+    })
 
-def is_internal_ip(ip_str):
-    try:
-        ip_clean = ip_str.split('%')[0]
-        ip = ipaddress.ip_address(ip_clean)
-        return ip.is_private or ip.is_loopback
-    except ValueError:
+def _officer_device_verified(request):
+    verified_at = request.session.get("officer_device_verified_at")
+    if not verified_at:
         return False
+    try:
+        age_seconds = time.time() - float(verified_at)
+    except (TypeError, ValueError):
+        return False
+    return age_seconds <= getattr(settings, "OFFICER_DEVICE_PROOF_TTL_SECONDS", 900)
 
-def officer_ip_required(view_func):
+def officer_device_required(view_func):
     def _wrapped_view(request, *args, **kwargs):
         if "user" not in request.session:
             return redirect("login")
         if not _is_officer_role(request.session.get("role")):
             return HttpResponseForbidden("Forbidden: Tài khoản của bạn không có quyền truy cập.")
-        client_ip = get_client_ip(request)
-        if not is_internal_ip(client_ip):
-            return HttpResponseForbidden(f"Forbidden: Cán bộ không được thực hiện nghiệp vụ từ IP ngoài mạng nội bộ ({client_ip}).")
+        if not _active_officer_key_for_session(request):
+            return HttpResponseForbidden("Forbidden: Thiết bị/chứng thư PQC của cán bộ chưa active.")
+        if request.method == "POST" and not _officer_device_verified(request):
+            return HttpResponseForbidden("Forbidden: Vui lòng xác thực thiết bị bằng PQC Local Agent trước khi thực hiện nghiệp vụ.")
         return view_func(request, *args, **kwargs)
     return _wrapped_view
 
-# CƠ CHẾ WHITELIST: Chỉ cho phép request đến từ IP mạng nội bộ (Bỏ qua Session để Agent gọi được)
-def internal_ip_only(view_func):
+def agent_proxy_allowed(view_func):
     def _wrapped_view(request, *args, **kwargs):
-        client_ip = get_client_ip(request)
-        if not is_internal_ip(client_ip):
-            return HttpResponseForbidden(f"Forbidden: API Proxy chỉ chấp nhận kết nối từ Local Agent trong mạng nội bộ ({client_ip}).")
         return view_func(request, *args, **kwargs)
     return _wrapped_view
 
@@ -200,10 +206,6 @@ def register(request):
         kem_pk_hex = request.POST.get("ml_kem_pk_hex")
 
         if _is_officer_role(role):
-            client_ip = get_client_ip(request)
-            if not is_internal_ip(client_ip):
-                messages.error(request, f"Đăng ký tài khoản Cán bộ bị từ chối. IP của bạn ({client_ip}) nằm ngoài mạng nội bộ.")
-                return redirect("register")
             if not dsa_pk_hex or not kem_pk_hex:
                 messages.error(request, "Thiếu khóa công khai gửi lên từ PQC Local Agent cục bộ của cán bộ.")
                 return redirect("register")
@@ -276,11 +278,6 @@ def login(request):
                 ph.verify(user["password_hash"], password_attempt)
                 if ph.check_needs_rehash(user["password_hash"]):
                     db.users.update_one({"_id": user["_id"]}, {"$set": {"password_hash": ph.hash(password_attempt)}})
-                if _is_officer_role(user.get("role")):
-                    client_ip = get_client_ip(request)
-                    if not is_internal_ip(client_ip):
-                        messages.error(request, f"Đăng nhập bị từ chối. Tài khoản Cán bộ chỉ được phép đăng nhập từ mạng nội bộ (IP hiện tại: {client_ip}).")
-                        return redirect("login")
                 if user.get("pqc_status") == "inactive":
                     messages.error(request, "Tài khoản của bạn bị lỗi hoặc chưa có khóa PQC hợp lệ.")
                     return redirect("login")
@@ -328,9 +325,8 @@ def dashboard(request):
         },
     )
 
-# Cập nhật Decorator cho 2 proxy này để Agent có thể gọi không bị lỗi 403 CSRF hay Session Redirect
 @csrf_exempt
-@internal_ip_only
+@agent_proxy_allowed
 def api_ca_public_key(request):
     try:
         r = requests.get(_ca_url("master-public-key"), timeout=10)
@@ -339,7 +335,7 @@ def api_ca_public_key(request):
         return JsonResponse({"detail": str(e)}, status=500)
 
 @csrf_exempt
-@internal_ip_only
+@agent_proxy_allowed
 def api_ca_tsa(request):
     if request.method != "POST":
          return JsonResponse({"detail": "Method not allowed"}, status=405)
@@ -350,7 +346,57 @@ def api_ca_tsa(request):
     except Exception as e:
         return JsonResponse({"detail": str(e)}, status=500)
 
-@officer_ip_required
+def api_device_challenge(request):
+    if request.method != "GET":
+        return JsonResponse({"detail": "Method not allowed"}, status=405)
+    if "user" not in request.session or not _is_officer_role(request.session.get("role")):
+        return JsonResponse({"detail": "Officer login required"}, status=403)
+    if not _active_officer_key_for_session(request):
+        return JsonResponse({"detail": "Officer device certificate is not active"}, status=403)
+
+    challenge = secrets.token_urlsafe(32)
+    request.session["officer_device_challenge"] = challenge
+    request.session["officer_device_challenge_at"] = time.time()
+    return JsonResponse({"challenge": challenge, "algorithm": "ML-DSA-65"})
+
+def api_device_verify(request):
+    if request.method != "POST":
+        return JsonResponse({"detail": "Method not allowed"}, status=405)
+    if "user" not in request.session or not _is_officer_role(request.session.get("role")):
+        return JsonResponse({"detail": "Officer login required"}, status=403)
+
+    challenge = request.session.get("officer_device_challenge")
+    challenge_at = request.session.get("officer_device_challenge_at", 0)
+    if not challenge or time.time() - float(challenge_at or 0) > 120:
+        return JsonResponse({"detail": "Device challenge expired"}, status=400)
+
+    officer_key_doc = _active_officer_key_for_session(request)
+    if not officer_key_doc or not officer_key_doc.get("ml_dsa_pk"):
+        return JsonResponse({"detail": "Officer signing public key not found"}, status=403)
+
+    try:
+        req_data = json.loads(request.body.decode("utf-8"))
+        signature = bytes.fromhex(req_data["signature_hex"])
+        public_key_value = officer_key_doc["ml_dsa_pk"]
+        if isinstance(public_key_value, str):
+            public_key = bytes.fromhex(public_key_value)
+        else:
+            public_key = bytes(public_key_value)
+
+        import oqs
+        with oqs.Signature("ML-DSA-65") as verifier:
+            is_valid = verifier.verify(challenge.encode("utf-8"), signature, public_key)
+        if not is_valid:
+            return JsonResponse({"detail": "Invalid device proof signature"}, status=403)
+
+        request.session["officer_device_verified_at"] = time.time()
+        request.session.pop("officer_device_challenge", None)
+        request.session.pop("officer_device_challenge_at", None)
+        return JsonResponse({"status": "success", "device_verified": True})
+    except Exception as e:
+        return JsonResponse({"detail": str(e)}, status=400)
+
+@officer_device_required
 def sign_document_view(request, doc_id):
     document = _find_document(doc_id)
     if not document:
@@ -409,7 +455,7 @@ def sign_document_view(request, doc_id):
         },
     )
 
-@officer_ip_required
+@officer_device_required
 def decrypt_application_view(request, doc_id):
     document = _find_document(doc_id)
     if not document:
@@ -469,9 +515,6 @@ def download_signed_pdf(request, doc_id):
     assigned_officer_id = str(document.get("assigned_officer_id", ""))
     
     if user_role == "officer":
-        client_ip = get_client_ip(request)
-        if not is_internal_ip(client_ip):
-            return HttpResponseForbidden(f"Forbidden: Cán bộ không được phép tải hồ sơ từ IP ngoài mạng nội bộ ({client_ip}).")
         if assigned_officer_id != user_id:
             return HttpResponseForbidden("Forbidden: Bạn không được gán quyền xem hồ sơ này.")
     else:
