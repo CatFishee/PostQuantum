@@ -52,6 +52,62 @@
 
 <script>
     const LOCAL_AGENT_URL = "{{ local_agent_url|escapejs }}";
+    const DEVICE_CHALLENGE_URL = "{% url 'api_device_challenge' %}";
+    const DEVICE_VERIFY_URL = "{% url 'api_device_verify' %}";
+
+    function getCookie(name) {
+        var cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            var cookies = document.cookie.split(';');
+            for (var i = 0; i < cookies.length; i++) {
+                var cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+
+    async function verifyOfficerDevice(passphrase) {
+        let challengeResponse = await fetch(DEVICE_CHALLENGE_URL, { credentials: "same-origin" });
+        let challengeData = await challengeResponse.json();
+        if (!challengeResponse.ok) {
+            throw new Error(challengeData.detail || "Không tạo được thử thách thiết bị.");
+        }
+
+        let proofResponse = await fetch(LOCAL_AGENT_URL + "/api/device-proof", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                passphrase: passphrase,
+                challenge: challengeData.challenge
+            })
+        });
+        let proofData = await proofResponse.json();
+        if (!proofResponse.ok) {
+            throw new Error(proofData.detail || "Local Agent không ký được thử thách thiết bị.");
+        }
+
+        let verifyResponse = await fetch(DEVICE_VERIFY_URL, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": getCookie("csrftoken")
+            },
+            body: JSON.stringify({
+                signature_hex: proofData.signature_hex,
+                ml_dsa_pk_hex: proofData.ml_dsa_pk_hex
+            })
+        });
+        let verifyData = await verifyResponse.json();
+        if (!verifyResponse.ok) {
+            throw new Error(verifyData.detail || "Portal không xác thực được thiết bị.");
+        }
+        return verifyData;
+    }
 
     async function performLocalSign() {
         var passphrase = document.getElementById('passphrase').value;
@@ -63,6 +119,13 @@
         }
         if (fileInput.files.length === 0) {
             alert("Đồng chí vui lòng chọn tệp tin PDF thô cần ký số!");
+            return;
+        }
+
+        try {
+            await verifyOfficerDevice(passphrase);
+        } catch (err) {
+            alert("Xác thực thiết bị thất bại: " + err.message);
             return;
         }
 

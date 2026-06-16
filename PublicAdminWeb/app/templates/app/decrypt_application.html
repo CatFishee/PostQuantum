@@ -14,6 +14,7 @@
 {% endif %}
 
 <div class="card shadow-sm p-4 mt-3">
+    {% csrf_token %}
     <div class="mb-3 p-3 bg-light rounded" style="border: 1px dashed #0d6efd;">
         <label class="form-label fw-bold text-primary"><i class="fas fa-lock-open"></i> Nhập mật khẩu mở khóa giải mã</label>
         <input type="password" id="passphrase" class="form-control" placeholder="Nhập mật khẩu khóa riêng ML-KEM-768 của đồng chí" required>
@@ -32,11 +33,74 @@
 
 <script>
     const LOCAL_AGENT_URL = "{{ local_agent_url|escapejs }}";
+    const DEVICE_CHALLENGE_URL = "{% url 'api_device_challenge' %}";
+    const DEVICE_VERIFY_URL = "{% url 'api_device_verify' %}";
+
+    function getCookie(name) {
+        var cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            var cookies = document.cookie.split(';');
+            for (var i = 0; i < cookies.length; i++) {
+                var cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+
+    async function verifyOfficerDevice(passphrase) {
+        let challengeResponse = await fetch(DEVICE_CHALLENGE_URL, { credentials: "same-origin" });
+        let challengeData = await challengeResponse.json();
+        if (!challengeResponse.ok) {
+            throw new Error(challengeData.detail || "Không tạo được thử thách thiết bị.");
+        }
+
+        let proofResponse = await fetch(LOCAL_AGENT_URL + "/api/device-proof", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                passphrase: passphrase,
+                challenge: challengeData.challenge
+            })
+        });
+        let proofData = await proofResponse.json();
+        if (!proofResponse.ok) {
+            throw new Error(proofData.detail || "Local Agent không ký được thử thách thiết bị.");
+        }
+
+        let verifyResponse = await fetch(DEVICE_VERIFY_URL, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": getCookie("csrftoken")
+            },
+            body: JSON.stringify({
+                signature_hex: proofData.signature_hex,
+                ml_dsa_pk_hex: proofData.ml_dsa_pk_hex
+            })
+        });
+        let verifyData = await verifyResponse.json();
+        if (!verifyResponse.ok) {
+            throw new Error(verifyData.detail || "Portal không xác thực được thiết bị.");
+        }
+        return verifyData;
+    }
 
     async function performLocalDecrypt() {
         var passphrase = document.getElementById('passphrase').value;
         if (!passphrase) {
             alert("Vui lòng cung cấp mật khẩu mở khóa riêng ML-KEM cục bộ của cán bộ!");
+            return;
+        }
+
+        try {
+            await verifyOfficerDevice(passphrase);
+        } catch (err) {
+            alert("Xác thực thiết bị thất bại: " + err.message);
             return;
         }
 

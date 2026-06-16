@@ -26,6 +26,8 @@ urlpatterns = [
     # --- ENDPOINTS PROXY CHO LOCAL AGENT ---
     path("api/ca-public-key/", views.api_ca_public_key, name="api_ca_public_key"),
     path("api/ca-tsa/", views.api_ca_tsa, name="api_ca_tsa"),
+    path("api/device-challenge/", views.api_device_challenge, name="api_device_challenge"),
+    path("api/device-verify/", views.api_device_verify, name="api_device_verify"),
     
     path("logout/", LogoutView.as_view(next_page="/"), name="logout"),
     path("admin/", admin.site.urls),
