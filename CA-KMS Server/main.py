@@ -25,12 +25,12 @@ from crypto_utils import aes_gcm_encrypt, aes_gcm_decrypt
 async def lifespan(app: FastAPI):
     """Quản lý vòng đời hiện đại: In Banner CA Server ra Terminal."""
     print("\n" + "="*60)
-    print(" >> [SYSTEM STATE: CENTRAL CA-KMS & TSA SERVER IS RUNNING]")
+    print(" >> [SYSTEM STATE: PQC CA/RA/TSA SERVER IS RUNNING]")
     print(" >> Port: 5001 | Endpoint: http://127.0.0.1:5001")
     print("="*60 + "\n")
     yield
 
-app = FastAPI(title="PQC CA-KMS & TSA Security Server", lifespan=lifespan)
+app = FastAPI(title="PQC CA/RA/TSA Security Server", lifespan=lifespan)
 db = get_db()
 PRIVATE_BLOB_STORAGE_ROOT = os.getenv(
     "PRIVATE_BLOB_STORAGE_ROOT",
@@ -198,7 +198,11 @@ def hash_pdf_pqc_server(file_path: str) -> bytes:
 
 @app.get("/master-public-key")
 def get_master_public_key():
-    return {"public_key": CA_HSM_STORE["ml_kem_pub"]}
+    return {
+        "public_key": CA_HSM_STORE["ml_kem_pub"],
+        "key_purpose": "ca-transport-only",
+        "not_for_user_key_escrow": True,
+    }
 
 @app.post("/register_officer")
 def register_officer(req: RegisterRequest):
@@ -453,28 +457,18 @@ def verify_and_store_signed(
         if not sig_valid:
             raise Exception("Mã băm chữ ký không khớp với nội dung tài liệu (Signature verification failed).")
 
-        # --- TÁI MÃ HÓA LƯU TRỮ TRỰC TIẾP LÊN CLOUD ATLAS DB (DÙNG MASTER KEM CỦA CA) ---
-        ca_kem_pub = bytes.fromhex(CA_HSM_STORE["ml_kem_pub"])
-        with oqs.KeyEncapsulation("ML-KEM-1024") as kem_storage:
-            enc_key_store, shared_secret_store = kem_storage.encap_secret(ca_kem_pub)
-
-        aes_key_store = shared_secret_store[:32]
-        aesgcm_store = AESGCM(aes_key_store)
-        nonce_store = os.urandom(12)
-        
-        ciphertext_storage = aesgcm_store.encrypt(nonce_store, decrypted_pdf, None)
-        signed_blob = _write_private_blob(ciphertext_storage, "signed")
-
-        # Cập nhật metadata lên MongoDB Atlas; ciphertext đã nằm trong private blob storage.
+        # CA chỉ xác minh chữ ký và ghi metadata; không giữ khóa giải mã sản phẩm đã ký.
         from bson import ObjectId
         db.applications.update_one(
             {"_id": ObjectId(doc_id)},
             {"$set": {
                 "status": "processed",
                 "result_document": {
-                    **signed_blob,
-                    "encapsulated_key_b64": base64.b64encode(enc_key_store).decode("utf-8"),
-                    "nonce_b64": base64.b64encode(nonce_store).decode("utf-8"),
+                    "artifact_policy": "metadata-only-no-ca-decrypt",
+                    "stored_by_ca": False,
+                    "document_hash_hex": doc_hash_recalculated.hex(),
+                    "cert_serial": cert_serial_str,
+                    "verified_at": datetime.datetime.utcnow(),
                     "cloud_db_policy": "metadata-only",
                 }
             }}
@@ -491,7 +485,7 @@ def verify_and_store_signed(
             "logged_at": datetime.datetime.utcnow()
         })
 
-        return {"status": "success", "message": "Thẩm định chữ ký số hậu lượng tử và lưu trữ đám mây thành công."}
+        return {"status": "success", "message": "Thẩm định chữ ký số hậu lượng tử thành công; CA chỉ lưu metadata xác minh."}
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Verify and Store Signed PDF failed: {str(e)}")
@@ -517,27 +511,10 @@ def decrypt_pdf(
     encapsulated_key_base64: str = Form(...),
     nonce_base64: str = Form(...)
 ):
-    try:
-        ca_kem_priv = bytes.fromhex(CA_HSM_STORE["ml_kem_priv"])
-        ciphertext = base64.b64decode(ciphertext_base64)
-        encapsulated_key = base64.b64decode(encapsulated_key_base64)
-        nonce = base64.b64decode(nonce_base64)
-
-        with oqs.KeyEncapsulation("ML-KEM-1024", secret_key=ca_kem_priv) as kem:
-            shared_secret = kem.decap_secret(encapsulated_key)
-
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        aes_key = shared_secret[:32]
-        aesgcm = AESGCM(aes_key)
-        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
-
-        return Response(
-            content=plaintext,
-            media_type="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=decrypted.pdf"}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Decrypt master KEM failed: {str(e)}")
+    raise HTTPException(
+        status_code=410,
+        detail="CA/RA/TSA service does not decrypt documents or act as a KMS. Decryption must happen on an authorized user/officer device."
+    )
 
 @app.post("/tsa/timestamp")
 def generate_timestamp(req: TimestampRequest):

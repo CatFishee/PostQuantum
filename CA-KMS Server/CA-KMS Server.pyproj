@@ -10,7 +10,7 @@
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
     <OutputPath>.</OutputPath>
-    <Name>CA-KMS Server</Name>
+    <Name>CA-RA-TSA Server</Name>
     <RootNamespace>CA Server</RootNamespace>
     <SuppressEnvironmentCreationPrompt>True</SuppressEnvironmentCreationPrompt>
     <InterpreterId>Global|VisualStudio|venv (Python 3.14 (64-bit))</InterpreterId>

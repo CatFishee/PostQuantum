@@ -479,6 +479,10 @@ def download_signed_pdf(request, doc_id):
             return HttpResponseForbidden("Forbidden: Bạn không có quyền truy cập hồ sơ này.")
             
     result_document = document.get("result_document") or {}
+    if result_document.get("artifact_policy") == "metadata-only-no-ca-decrypt":
+        messages.error(request, "CA chỉ lưu metadata xác minh chữ ký và không giải mã/tải tài liệu đã ký. Artifact đã ký phải được lấy từ thiết bị hoặc kho phân phối được ủy quyền.")
+        return redirect("dashboard")
+
     try:
         ciphertext_b64 = _load_ciphertext_base64(
             doc_id,
@@ -488,29 +492,11 @@ def download_signed_pdf(request, doc_id):
     except Exception as e:
         messages.error(request, f"Không thể tải tài liệu đã mã hóa từ private blob storage: {e}")
         return redirect("dashboard")
-    enc_key_b64 = result_document.get("encapsulated_key_b64")
-    nonce_b64 = result_document.get("nonce_b64")
-
     if not ciphertext_b64:
         raise Http404("Tài liệu chưa được ký số hoàn chỉnh.")
-        
-    try:
-        ca_decrypt_url = _ca_url("decrypt-pdf")
-        payload = {
-            "ciphertext_base64": ciphertext_b64,
-            "encapsulated_key_base64": enc_key_b64,
-            "nonce_base64": nonce_b64
-        }
-        res = requests.post(ca_decrypt_url, data=payload, timeout=25)
-        if res.status_code != 200:
-            raise Exception(f"CA Server giải mã lỗi: {res.text}")
-            
-        response = HttpResponse(res.content, content_type="application/pdf")
-        response["Content-Disposition"] = f"attachment; filename=signed_{doc_id}.pdf"
-        return response
-    except Exception as e:
-        messages.error(request, f"Giải mật mã và tải tệp lỗi: {e}")
-        return redirect("dashboard")
+
+    messages.error(request, "Artifact kiểu cũ đang yêu cầu CA giải mã nên bị chặn. CA/RA/TSA không thực hiện vai trò KMS hoặc giải mã tài liệu.")
+    return redirect("dashboard")
 
 def verify_document_view(request):
     verification_result = None
