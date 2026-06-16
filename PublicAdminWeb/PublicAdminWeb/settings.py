@@ -16,16 +16,42 @@ import posixpath
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+
+def _env_bool(name, default):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_csv(name, default):
+    value = os.getenv(name)
+    if not value:
+        return default
+    return [item.strip() for item in value.split(",") if item.strip()]
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/2.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = '3094aa7e-2540-47f7-a0a2-cd749fa5cc6f'
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', '3094aa7e-2540-47f7-a0a2-cd749fa5cc6f')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = _env_bool('DJANGO_DEBUG', True)
 
-ALLOWED_HOSTS = []
+PUBLIC_PORTAL_DOMAIN = os.getenv('PUBLIC_PORTAL_DOMAIN', 'thanhthuydepgai.42web.io')
+PUBLIC_PORTAL_ORIGIN = os.getenv('PUBLIC_PORTAL_ORIGIN', f'https://{PUBLIC_PORTAL_DOMAIN}')
+
+ALLOWED_HOSTS = _env_csv(
+    'DJANGO_ALLOWED_HOSTS',
+    [PUBLIC_PORTAL_DOMAIN, 'localhost', '127.0.0.1', '[::1]']
+)
+CSRF_TRUSTED_ORIGINS = _env_csv('DJANGO_CSRF_TRUSTED_ORIGINS', [PUBLIC_PORTAL_ORIGIN])
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
+SESSION_COOKIE_SECURE = _env_bool('DJANGO_SESSION_COOKIE_SECURE', not DEBUG)
+CSRF_COOKIE_SECURE = _env_bool('DJANGO_CSRF_COOKIE_SECURE', not DEBUG)
+SECURE_SSL_REDIRECT = _env_bool('DJANGO_SECURE_SSL_REDIRECT', False)
 
 # Application references
 # https://docs.djangoproject.com/en/2.1/ref/settings/#std:setting-INSTALLED_APPS

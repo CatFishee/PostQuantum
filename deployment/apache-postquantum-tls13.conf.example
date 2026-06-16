@@ -1,0 +1,26 @@
+Listen 443
+
+SSLProtocol -all +TLSv1.3
+SSLCipherSuite TLSv1.3 TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256
+SSLHonorCipherOrder on
+SSLSessionTickets off
+SSLProxyEngine on
+
+<VirtualHost _default_:443>
+    ServerName thanhthuydepgai.42web.io:443
+    SSLEngine on
+
+    SSLCertificateFile "${SRVROOT}/conf/ssl/postquantum-thanhthuydepgai/certificate_fullchain.crt"
+    SSLCertificateKeyFile "${SRVROOT}/conf/ssl/postquantum-thanhthuydepgai/thanhthuydepgai.42web.io.key"
+    SSLCACertificateFile "${SRVROOT}/conf/ssl/postquantum-thanhthuydepgai/ca_bundle.crt"
+
+    ProxyPreserveHost On
+    ProxyPass / http://127.0.0.1:8000/
+    ProxyPassReverse / http://127.0.0.1:8000/
+
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader set X-Forwarded-Port "443"
+
+    CustomLog "${SRVROOT}/logs/postquantum_ssl_request.log" "%t %h %{SSL_PROTOCOL}x %{SSL_CIPHER}x \"%r\" %b"
+    ErrorLog "${SRVROOT}/logs/postquantum_ssl_error.log"
+</VirtualHost>
