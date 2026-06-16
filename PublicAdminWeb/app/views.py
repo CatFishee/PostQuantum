@@ -76,6 +76,16 @@ def _find_document(doc_id):
                 return found
     return None
 
+def _load_ciphertext_base64(doc_id, metadata, encrypted_blob_endpoint):
+    ciphertext_b64 = metadata.get("ciphertext_b64", "")
+    if ciphertext_b64:
+        return ciphertext_b64
+    if not metadata.get("blob_ref"):
+        return ""
+    response = requests.get(_ca_url(encrypted_blob_endpoint.format(doc_id=doc_id)), timeout=15)
+    response.raise_for_status()
+    return response.json().get("ciphertext_base64", "")
+
 def get_client_ip(request):
     return request.META.get('REMOTE_ADDR', '127.0.0.1')
 
@@ -117,7 +127,7 @@ def _document_rows(raw_docs):
         pqc_metadata = doc.get("pqc_encryption_metadata") or {}
         doc_id = str(doc.get("_id", ""))
         signed_file_path = ""
-        if result_document.get("ciphertext_b64"):
+        if result_document.get("ciphertext_b64") or result_document.get("blob_ref"):
             signed_file_path = reverse("download_signed_pdf", kwargs={"doc_id": doc_id})
         rows.append(
             {
@@ -381,7 +391,7 @@ def sign_document_view(request, doc_id):
             if res.status_code != 200:
                 raise Exception(f"CA Server từ chối thẩm định: {res.text}")
 
-            messages.success(request, "Đã thẩm định chữ ký số hậu lượng tử và lưu trữ đám mây Atlas thành công!")
+            messages.success(request, "Đã thẩm định chữ ký số hậu lượng tử; Atlas chỉ lưu metadata, ciphertext lưu trong private blob storage.")
             return redirect("dashboard")
         except Exception as e:
             messages.error(request, f"Lỗi hoàn thiện tệp ký số: {e}")
@@ -412,7 +422,15 @@ def decrypt_application_view(request, doc_id):
         return redirect("dashboard")
         
     metadata = document.get("pqc_encryption_metadata") or {}
-    ciphertext_base64 = metadata.get("ciphertext_b64", "")
+    try:
+        ciphertext_base64 = _load_ciphertext_base64(
+            doc_id,
+            metadata,
+            "documents/{doc_id}/encrypted-unsigned"
+        )
+    except Exception as e:
+        messages.error(request, f"Không thể tải ciphertext từ private blob storage: {e}")
+        return redirect("dashboard")
     encapsulated_key = metadata.get("encapsulated_key")
     nonce = metadata.get("nonce")
     
@@ -461,7 +479,15 @@ def download_signed_pdf(request, doc_id):
             return HttpResponseForbidden("Forbidden: Bạn không có quyền truy cập hồ sơ này.")
             
     result_document = document.get("result_document") or {}
-    ciphertext_b64 = result_document.get("ciphertext_b64")
+    try:
+        ciphertext_b64 = _load_ciphertext_base64(
+            doc_id,
+            result_document,
+            "documents/{doc_id}/encrypted-signed"
+        )
+    except Exception as e:
+        messages.error(request, f"Không thể tải tài liệu đã mã hóa từ private blob storage: {e}")
+        return redirect("dashboard")
     enc_key_b64 = result_document.get("encapsulated_key_b64")
     nonce_b64 = result_document.get("nonce_b64")
 
@@ -616,7 +642,7 @@ def upload_pdf(request):
                 original_filename=uploaded_file.name
             )
             
-            messages.success(request, "Hồ sơ đã được xác thực trạng thái chứng thư và mã hóa lưu trữ trực tiếp lên Atlas DB thành công!")
+            messages.success(request, "Hồ sơ đã được mã hóa; Atlas chỉ lưu metadata, ciphertext lưu trong private blob storage.")
             return redirect("dashboard")
             
         except Exception as e:
