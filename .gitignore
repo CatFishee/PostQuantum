@@ -371,4 +371,6 @@ __pycache__/
 *.pyc
 PublicAdminWeb/media/
 media/
+private_storage/
+CA-KMS Server/private_storage/
 .env

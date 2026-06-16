@@ -32,6 +32,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="PQC CA-KMS & TSA Security Server", lifespan=lifespan)
 db = get_db()
+PRIVATE_BLOB_STORAGE_ROOT = os.getenv(
+    "PRIVATE_BLOB_STORAGE_ROOT",
+    os.path.join(current_dir, "private_storage")
+)
 
 @app.middleware("http")
 async def ip_whitelist_middleware(request: Request, call_next):
@@ -98,6 +102,56 @@ def _to_object_id_local(value):
     if not value: return value
     try: return ObjectId(str(value))
     except Exception: return value
+
+def _write_private_blob(data: bytes, category: str) -> dict:
+    digest = hashlib.sha256(data).hexdigest()
+    blob_ref = f"{category}/{digest[:2]}/{digest}.bin"
+    blob_path = os.path.abspath(os.path.join(PRIVATE_BLOB_STORAGE_ROOT, *blob_ref.split("/")))
+    root_path = os.path.abspath(PRIVATE_BLOB_STORAGE_ROOT)
+    if os.path.commonpath([blob_path, root_path]) != root_path:
+        raise ValueError("Invalid blob path")
+    os.makedirs(os.path.dirname(blob_path), exist_ok=True)
+    with open(blob_path, "wb") as f:
+        f.write(data)
+    return {
+        "blob_ref": blob_ref,
+        "ciphertext_sha256": digest,
+        "ciphertext_size_bytes": len(data),
+        "storage_provider": "local-private-blob-demo"
+    }
+
+def _read_private_blob(blob_ref: str) -> bytes:
+    if not blob_ref:
+        raise ValueError("Missing blob_ref")
+    normalized_ref = os.path.normpath(blob_ref).replace("\\", "/")
+    if normalized_ref.startswith("../") or os.path.isabs(normalized_ref):
+        raise ValueError("Invalid blob_ref")
+    blob_path = os.path.abspath(os.path.join(PRIVATE_BLOB_STORAGE_ROOT, *normalized_ref.split("/")))
+    root_path = os.path.abspath(PRIVATE_BLOB_STORAGE_ROOT)
+    if os.path.commonpath([blob_path, root_path]) != root_path:
+        raise ValueError("Invalid blob path")
+    with open(blob_path, "rb") as f:
+        return f.read()
+
+def _blob_payload_for_document(doc_id: str, section_name: str) -> dict:
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database Offline")
+    document = db.applications.find_one({"_id": _to_object_id_local(doc_id)})
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    section = document.get(section_name) or {}
+    blob_ref = section.get("blob_ref")
+    ciphertext = _read_private_blob(blob_ref)
+    expected_digest = section.get("ciphertext_sha256")
+    actual_digest = hashlib.sha256(ciphertext).hexdigest()
+    if expected_digest and expected_digest != actual_digest:
+        raise HTTPException(status_code=409, detail="Encrypted blob integrity check failed")
+    return {
+        "ciphertext_base64": base64.b64encode(ciphertext).decode("utf-8"),
+        "ciphertext_sha256": actual_digest,
+        "ciphertext_size_bytes": len(ciphertext),
+        "storage_provider": section.get("storage_provider"),
+    }
 
 # --- CHƯƠNG TRÌNH XÁC MINH TÍNH TOÀN VẸN CHỨNG THƯ SỐ (PQC CERT VERIFICATION) ---
 def verify_certificate_integrity(cert_doc: dict, ca_pub_key_hex: str) -> bool:
@@ -273,8 +327,9 @@ async def encrypt_pdf(req: UnsignedEncryptRequest):
         aesgcm = AESGCM(aes_key)
         nonce = os.urandom(12)
         ciphertext = aesgcm.encrypt(nonce, pdf_bytes, None)
+        unsigned_blob = _write_private_blob(ciphertext, "unsigned")
 
-        # 3. ĐẨY TRỰC TIẾP DỮ LIỆU MẬT MÃ LÊN CLOUD DATABASE ATLAS (KHÔNG LƯU FILE CỤC BỘ)
+        # 3. MongoDB Atlas chỉ lưu metadata; ciphertext nằm trong private blob storage.
         application_doc = {
             "citizen_id": _to_object_id_local(req.citizen_id),
             "assigned_officer_id": _to_object_id_local(req.officer_id),
@@ -282,15 +337,19 @@ async def encrypt_pdf(req: UnsignedEncryptRequest):
             "submission_type": "unsigned",
             "requires_officer_signature": True,
             "pqc_encryption_metadata": {
-                "ciphertext_b64": base64.b64encode(ciphertext).decode("utf-8"),
+                **unsigned_blob,
                 "original_upload_path": f"uploaded_pdfs/{req.original_filename}",
                 "encapsulated_key": encapsulated_key.hex(),
                 "kems_variant": "ML-KEM-768",
                 "payload_cipher": "AES-256-GCM",
                 "nonce": nonce.hex(),
+                "cloud_db_policy": "metadata-only",
             },
             "result_document": {
-                "ciphertext_b64": None,
+                "blob_ref": None,
+                "ciphertext_sha256": None,
+                "ciphertext_size_bytes": None,
+                "storage_provider": None,
                 "encapsulated_key_b64": None,
                 "nonce_b64": None,
             },
@@ -404,17 +463,19 @@ def verify_and_store_signed(
         nonce_store = os.urandom(12)
         
         ciphertext_storage = aesgcm_store.encrypt(nonce_store, decrypted_pdf, None)
+        signed_blob = _write_private_blob(ciphertext_storage, "signed")
 
-        # Cập nhật trực tiếp kết quả mật mã tĩnh lên MongoDB Atlas
+        # Cập nhật metadata lên MongoDB Atlas; ciphertext đã nằm trong private blob storage.
         from bson import ObjectId
         db.applications.update_one(
             {"_id": ObjectId(doc_id)},
             {"$set": {
                 "status": "processed",
                 "result_document": {
-                    "ciphertext_b64": base64.b64encode(ciphertext_storage).decode("utf-8"),
+                    **signed_blob,
                     "encapsulated_key_b64": base64.b64encode(enc_key_store).decode("utf-8"),
                     "nonce_b64": base64.b64encode(nonce_store).decode("utf-8"),
+                    "cloud_db_policy": "metadata-only",
                 }
             }}
         )
@@ -441,6 +502,14 @@ def verify_and_store_signed(
                 os.remove(temp_file.name)
         except Exception:
             pass
+
+@app.get("/documents/{doc_id}/encrypted-unsigned")
+def get_encrypted_unsigned_document(doc_id: str):
+    return _blob_payload_for_document(doc_id, "pqc_encryption_metadata")
+
+@app.get("/documents/{doc_id}/encrypted-signed")
+def get_encrypted_signed_document(doc_id: str):
+    return _blob_payload_for_document(doc_id, "result_document")
 
 @app.post("/decrypt-pdf")
 def decrypt_pdf(
