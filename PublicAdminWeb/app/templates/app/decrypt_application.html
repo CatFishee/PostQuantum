@@ -31,6 +31,8 @@
 </div>
 
 <script>
+    const LOCAL_AGENT_URL = "{{ local_agent_url|escapejs }}";
+
     async function performLocalDecrypt() {
         var passphrase = document.getElementById('passphrase').value;
         if (!passphrase) {
@@ -50,7 +52,7 @@
 
         try {
             // Giao tiếp Local Agent để giải bao đóng KEM và khôi phục PDF thô gốc
-            let response = await fetch("http://127.0.0.1:54321/api/decrypt-pdf", {
+            let response = await fetch(LOCAL_AGENT_URL + "/api/decrypt-pdf", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({

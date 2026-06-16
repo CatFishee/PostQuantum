@@ -35,6 +35,14 @@ LOCAL_DEK_HEX = getattr(settings, "LOCAL_DEK_HEX", "0123456789abcdef0123456789ab
 LOCAL_MASTER_KEY = bytes.fromhex(LOCAL_DEK_HEX)
 
 # --- HELPER FUNCTIONS ---
+def _ca_url(path):
+    return f"{settings.CA_SERVICE_URL}/{path.lstrip('/')}"
+
+
+def _local_agent_url():
+    return getattr(settings, "LOCAL_AGENT_URL", "http://127.0.0.1:54321").rstrip("/")
+
+
 def _is_officer_role(role):
     return str(role or "").lower() == "officer"
 
@@ -136,7 +144,7 @@ def _get_user_display_name(user_id):
     return ""
 
 def ca_encrypt_pdf_in_memory(pdf_base64, officer_id, citizen_id, original_filename):
-    url = "http://127.0.0.1:5001/encrypt-pdf"
+    url = _ca_url("encrypt-pdf")
     payload = {
         "officer_id": str(officer_id),
         "citizen_id": str(citizen_id),
@@ -208,7 +216,7 @@ def register(request):
 
         if _is_officer_role(role):
             try:
-                r_pub = requests.get("http://127.0.0.1:5001/master-public-key", timeout=10)
+                r_pub = requests.get(_ca_url("master-public-key"), timeout=10)
                 r_pub.raise_for_status()
                 master_pub = bytes.fromhex(r_pub.json()["public_key"])
                 
@@ -231,7 +239,7 @@ def register(request):
                     "aes_tag": tag.hex(),
                     "encrypted_payload": cipher.hex()
                 }
-                response = requests.post("http://127.0.0.1:5001/register_officer", json=ca_req_data, timeout=15)
+                response = requests.post(_ca_url("register_officer"), json=ca_req_data, timeout=15)
                 response.raise_for_status()
                 
                 db.users.update_one({"_id": result.inserted_id}, {"$set": {"pqc_status": "active"}})
@@ -243,7 +251,7 @@ def register(request):
                 return redirect("register")
         messages.success(request, "Đăng ký thành công!")
         return redirect("login")
-    return render(request, "app/register.html", {"title": "Đăng ký", "year": datetime.now().year})
+    return render(request, "app/register.html", {"title": "Đăng ký", "local_agent_url": _local_agent_url(), "year": datetime.now().year})
 
 def login(request):
     if request.method == "POST":
@@ -315,7 +323,7 @@ def dashboard(request):
 @internal_ip_only
 def api_ca_public_key(request):
     try:
-        r = requests.get("http://127.0.0.1:5001/master-public-key", timeout=10)
+        r = requests.get(_ca_url("master-public-key"), timeout=10)
         return JsonResponse(r.json())
     except Exception as e:
         return JsonResponse({"detail": str(e)}, status=500)
@@ -327,7 +335,7 @@ def api_ca_tsa(request):
          return JsonResponse({"detail": "Method not allowed"}, status=405)
     try:
         req_data = json.loads(request.body.decode('utf-8'))
-        r = requests.post("http://127.0.0.1:5001/tsa/timestamp", json=req_data, timeout=10)
+        r = requests.post(_ca_url("tsa/timestamp"), json=req_data, timeout=10)
         return JsonResponse(r.json())
     except Exception as e:
         return JsonResponse({"detail": str(e)}, status=500)
@@ -361,7 +369,7 @@ def sign_document_view(request, doc_id):
             return redirect("sign_document", doc_id=doc_id)
 
         try:
-            ca_verify_url = "http://127.0.0.1:5001/verify-and-store-signed"
+            ca_verify_url = _ca_url("verify-and-store-signed")
             payload = {
                 "doc_id": str(doc_id),
                 "signer_id": str(user_id),
@@ -385,6 +393,7 @@ def sign_document_view(request, doc_id):
             "document": document_context, 
             "cert_serial": officer_key_doc["cert_serial"],
             "signer_id": str(user_id),
+            "local_agent_url": _local_agent_url(),
             "title": "Ký tài liệu", 
             "year": datetime.now().year
         },
@@ -423,6 +432,7 @@ def decrypt_application_view(request, doc_id):
         {
             "decryption_context": decryption_context,
             "document": _document_rows([document])[0],
+            "local_agent_url": _local_agent_url(),
             "title": "Giải mã hồ sơ",
             "year": datetime.now().year
         },
@@ -459,7 +469,7 @@ def download_signed_pdf(request, doc_id):
         raise Http404("Tài liệu chưa được ký số hoàn chỉnh.")
         
     try:
-        ca_decrypt_url = "http://127.0.0.1:5001/decrypt-pdf"
+        ca_decrypt_url = _ca_url("decrypt-pdf")
         payload = {
             "ciphertext_base64": ciphertext_b64,
             "encapsulated_key_base64": enc_key_b64,
@@ -529,7 +539,7 @@ def verify_document_view(request):
                                 pass
                         
                         try:
-                            ocsp_res = requests.post("http://127.0.0.1:5001/api/v1/ocsp", json={"serial_number": cert_serial_str}, timeout=5)
+                            ocsp_res = requests.post(_ca_url("api/v1/ocsp"), json={"serial_number": cert_serial_str}, timeout=5)
                             if ocsp_res.status_code == 200:
                                 ocsp_status = ocsp_res.json()["response"]["status"]
                         except Exception:

@@ -51,6 +51,8 @@
 </form>
 
 <script>
+    const LOCAL_AGENT_URL = "{{ local_agent_url|escapejs }}";
+
     async function performLocalSign() {
         var passphrase = document.getElementById('passphrase').value;
         var fileInput = document.getElementById('pdfFileInput');
@@ -72,7 +74,7 @@
             
             try {
                 // Gửi PDF thô dạng Base64 và thông tin xác thực xuống Local Agent để ký và mã hóa tại biên
-                let response = await fetch("http://127.0.0.1:54321/api/sign-and-encrypt", {
+                let response = await fetch(LOCAL_AGENT_URL + "/api/sign-and-encrypt", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({

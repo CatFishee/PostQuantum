@@ -82,6 +82,8 @@
 </div>
 
 <script>
+    const LOCAL_AGENT_URL = "{{ local_agent_url|escapejs }}";
+
     document.getElementById('roleSelect').addEventListener('change', function() {
         var section = document.getElementById('passphraseSection');
         section.style.display = (this.value === 'officer') ? 'block' : 'none';
@@ -98,7 +100,7 @@
 
             // Gọi Agent sinh khóa ngầm dưới Client
             try {
-                let response = await fetch("http://127.0.0.1:54321/api/generate-keys", {
+                let response = await fetch(LOCAL_AGENT_URL + "/api/generate-keys", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ passphrase: passphrase })
