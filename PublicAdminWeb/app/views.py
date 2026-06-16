@@ -583,6 +583,9 @@ def upload_pdf(request):
     if "user" not in request.session:
         messages.error(request, "Vui lòng đăng nhập trước khi upload hồ sơ.")
         return redirect("login")
+    if _is_officer_role(request.session.get("role")):
+        messages.error(request, "Luồng upload hồ sơ dành cho công dân/doanh nghiệp. Cán bộ xử lý hồ sơ trong dashboard nghiệp vụ.")
+        return redirect("dashboard")
         
     active_officers = []
     for user in db.users.find({"role": "officer", "pqc_status": "active"}):
