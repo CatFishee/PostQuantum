@@ -87,6 +87,20 @@ def _load_ciphertext_base64(doc_id, metadata, encrypted_blob_endpoint):
     response.raise_for_status()
     return response.json().get("ciphertext_base64", "")
 
+def _store_signed_delivery_pdf(doc_id, signed_pdf_base64):
+    if not signed_pdf_base64:
+        return ""
+    safe_doc_id = "".join(ch for ch in str(doc_id) if ch.isalnum() or ch in ("-", "_"))
+    relative_path = os.path.join("signed_results", f"signed_{safe_doc_id}.pdf")
+    absolute_path = os.path.abspath(os.path.join(settings.MEDIA_ROOT, relative_path))
+    media_root = os.path.abspath(settings.MEDIA_ROOT)
+    if os.path.commonpath([absolute_path, media_root]) != media_root:
+        raise ValueError("Invalid signed PDF delivery path")
+    os.makedirs(os.path.dirname(absolute_path), exist_ok=True)
+    with open(absolute_path, "wb") as f:
+        f.write(base64.b64decode(signed_pdf_base64))
+    return relative_path.replace("\\", "/")
+
 def _active_officer_key_for_session(request):
     user_id = request.session.get("user_id")
     if not user_id or db is None:
@@ -133,7 +147,7 @@ def _document_rows(raw_docs):
         pqc_metadata = doc.get("pqc_encryption_metadata") or {}
         doc_id = str(doc.get("_id", ""))
         signed_file_path = ""
-        if result_document.get("ciphertext_b64") or result_document.get("blob_ref"):
+        if result_document.get("delivery_path") or result_document.get("ciphertext_b64") or result_document.get("blob_ref"):
             signed_file_path = reverse("download_signed_pdf", kwargs={"doc_id": doc_id})
         rows.append(
             {
@@ -419,6 +433,7 @@ def sign_document_view(request, doc_id):
         ciphertext_b64 = request.POST.get("ciphertext_base64")
         encapsulated_key_b64 = request.POST.get("encapsulated_key_base64")
         nonce_b64 = request.POST.get("nonce_base64")
+        signed_pdf_b64 = request.POST.get("signed_pdf_base64")
 
         if not ciphertext_b64 or not encapsulated_key_b64 or not nonce_b64:
             messages.error(request, "Chưa nhận được khối mật mã ký số hợp lệ từ thiết bị của đồng chí.")
@@ -437,7 +452,18 @@ def sign_document_view(request, doc_id):
             if res.status_code != 200:
                 raise Exception(f"CA Server từ chối thẩm định: {res.text}")
 
-            messages.success(request, "Đã thẩm định chữ ký số hậu lượng tử; Atlas chỉ lưu metadata, ciphertext lưu trong private blob storage.")
+            delivery_path = _store_signed_delivery_pdf(doc_id, signed_pdf_b64)
+            if delivery_path and db is not None:
+                db.applications.update_one(
+                    {"_id": _to_mongo_id(doc_id)},
+                    {"$set": {
+                        "result_document.delivery_path": delivery_path,
+                        "result_document.delivery_storage_provider": "django-media-demo",
+                        "result_document.delivery_created_at": datetime.utcnow(),
+                    }}
+                )
+
+            messages.success(request, "Đã thẩm định chữ ký số hậu lượng tử; file PDF đã ký được lưu ở portal để công dân tải và kiểm tra chữ ký.")
             return redirect("dashboard")
         except Exception as e:
             messages.error(request, f"Lỗi hoàn thiện tệp ký số: {e}")
@@ -522,6 +548,17 @@ def download_signed_pdf(request, doc_id):
             return HttpResponseForbidden("Forbidden: Bạn không có quyền truy cập hồ sơ này.")
             
     result_document = document.get("result_document") or {}
+    delivery_path = result_document.get("delivery_path")
+    if delivery_path:
+        absolute_path = os.path.abspath(os.path.join(settings.MEDIA_ROOT, delivery_path))
+        media_root = os.path.abspath(settings.MEDIA_ROOT)
+        if os.path.commonpath([absolute_path, media_root]) != media_root or not os.path.exists(absolute_path):
+            raise Http404("File PDF đã ký không tồn tại trong kho phân phối của portal.")
+        with open(absolute_path, "rb") as f:
+            response = HttpResponse(f.read(), content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="signed_{doc_id}.pdf"'
+        return response
+
     if result_document.get("artifact_policy") == "metadata-only-no-ca-decrypt":
         messages.error(request, "CA chỉ lưu metadata xác minh chữ ký và không giải mã/tải tài liệu đã ký. Artifact đã ký phải được lấy từ thiết bị hoặc kho phân phối được ủy quyền.")
         return redirect("dashboard")

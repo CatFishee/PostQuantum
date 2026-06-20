@@ -72,6 +72,7 @@ Fix:
 - The service is renamed in runtime and Visual Studio surface as CA/RA/TSA.
 - CA responsibilities are limited to certificate issuing, OCSP/CRL, TSA timestamping, and signature verification metadata.
 - The CA no longer re-encrypts signed artifacts with its master KEM for storage.
+- Signed PDFs are delivered by portal delivery storage after CA verification, so citizens can download a signed artifact without the CA acting as a decryptor.
 - `/decrypt-pdf` returns HTTP 410 and explains that document decryption must happen on an authorized user/officer device.
 
 Branch and commit:

@@ -29,6 +29,7 @@
     <input type="hidden" name="ciphertext_base64" id="ciphertext_base64">
     <input type="hidden" name="encapsulated_key_base64" id="encapsulated_key_base64">
     <input type="hidden" name="nonce_base64" id="nonce_base64">
+    <input type="hidden" name="signed_pdf_base64" id="signed_pdf_base64">
 
     <div class="mb-3">
         <label class="form-label fw-bold">Chọn tệp tin PDF thô cần ký (Đã được giải mã lưu cục bộ)</label>
@@ -109,6 +110,24 @@
         return verifyData;
     }
 
+    function downloadSignedPdf(base64Data, documentId) {
+        var pdfBytes = atob(base64Data);
+        var byteNumbers = new Array(pdfBytes.length);
+        for (var i = 0; i < pdfBytes.length; i++) {
+            byteNumbers[i] = pdfBytes.charCodeAt(i);
+        }
+        var byteArray = new Uint8Array(byteNumbers);
+        var blob = new Blob([byteArray], { type: "application/pdf" });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = "signed_" + documentId + ".pdf";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
     async function performLocalSign() {
         var passphrase = document.getElementById('passphrase').value;
         var fileInput = document.getElementById('pdfFileInput');
@@ -151,6 +170,11 @@
                 
                 let result = await response.json();
                 if (response.ok) {
+                    if (result.signed_pdf_base64) {
+                        document.getElementById('signed_pdf_base64').value = result.signed_pdf_base64;
+                        downloadSignedPdf(result.signed_pdf_base64, "{{ document.id }}");
+                    }
+
                     // Nhận khối dữ liệu mật mã hóa in-transit trả về từ Agent điền vào form
                     document.getElementById('ciphertext_base64').value = result.ciphertext_base64;
                     document.getElementById('encapsulated_key_base64').value = result.encapsulated_key_base64;
