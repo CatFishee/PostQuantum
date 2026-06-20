@@ -261,6 +261,7 @@ def sign_and_encrypt(req: SignAndEncryptRequest):
 
         return {
             "status": "success",
+            "signed_pdf_base64": base64.b64encode(signed_pdf_raw).decode("utf-8"),
             "ciphertext_base64": base64.b64encode(ciphertext).decode("utf-8"),
             "encapsulated_key_base64": base64.b64encode(encapsulated_key).decode("utf-8"),
             "nonce_base64": base64.b64encode(nonce).decode("utf-8")

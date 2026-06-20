@@ -21,4 +21,4 @@ The `/master-public-key` endpoint remains only as a CA transport key for encrypt
 
 ## Demo Consequence
 
-After signature verification, the database stores proof metadata such as document hash, certificate serial, and verification time. The signed artifact must be distributed through an authorized device-side or storage-side workflow, not by asking the CA to decrypt and return it.
+After signature verification, the database stores proof metadata such as document hash, certificate serial, and verification time. The signed artifact is distributed by the portal delivery store (`media/signed_results` in the local demo), not by asking the CA to decrypt and return it.

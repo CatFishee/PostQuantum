@@ -15,10 +15,11 @@ MongoDB Atlas is used for availability of metadata, workflow state, certificate 
 - Original uploaded PDF bytes are never persisted in the cloud database.
 - Encrypted unsigned document ciphertext is stored in private blob storage.
 - Encrypted signed-result ciphertext is stored in private blob storage.
-- MongoDB only stores `blob_ref`, `ciphertext_sha256`, and `ciphertext_size_bytes`.
+- Signed PDF delivery copies are stored in the portal delivery store for authorized citizen download.
+- MongoDB only stores metadata such as `blob_ref`, `ciphertext_sha256`, `ciphertext_size_bytes`, and `delivery_path`.
 
 ## Demo Implementation
 
-For the local defense demo, private blob storage is a local directory configured by `PRIVATE_BLOB_STORAGE_ROOT`. In a production deployment this would map to a private object storage bucket or a managed encrypted file store with IAM, retention rules, and backup policy.
+For the local defense demo, private blob storage is a local directory configured by `PRIVATE_BLOB_STORAGE_ROOT`, and signed delivery PDFs are stored under `PublicAdminWeb/media/signed_results`. In a production deployment these would map to private object storage or a managed encrypted file store with IAM, retention rules, and backup policy.
 
 This keeps the demo aligned with the reviewer point: cloud database improves metadata availability, but leaking the database alone does not leak original document bytes.
