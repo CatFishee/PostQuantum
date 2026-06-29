@@ -42,6 +42,7 @@ DEBUG = _env_bool('DJANGO_DEBUG', True)
 PUBLIC_PORTAL_DOMAIN = os.getenv('PUBLIC_PORTAL_DOMAIN', 'thanhthuydepgai.42web.io')
 PUBLIC_PORTAL_ORIGIN = os.getenv('PUBLIC_PORTAL_ORIGIN', f'https://{PUBLIC_PORTAL_DOMAIN}')
 CA_SERVICE_URL = os.getenv('CA_SERVICE_URL', 'http://127.0.0.1:5001').rstrip('/')
+RA_SERVICE_URL = os.getenv('RA_SERVICE_URL', 'http://127.0.0.1:5002').rstrip('/')
 LOCAL_AGENT_URL = os.getenv('LOCAL_AGENT_URL', 'http://127.0.0.1:54321').rstrip('/')
 OFFICER_DEVICE_PROOF_TTL_SECONDS = int(os.getenv('OFFICER_DEVICE_PROOF_TTL_SECONDS', '900'))
 

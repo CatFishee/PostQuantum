@@ -64,13 +64,13 @@ Branch and commit:
 Docs:
 - `docs/STORAGE_MODEL.md`
 
-## 5. CA Is Not KMS
+## 5. CA/TSA Has No Document-Key Role
 
 Concern: A CA should issue and validate certificates, not manage user keys or decrypt user documents.
 
 Fix:
-- The service is renamed in runtime and Visual Studio surface as CA/RA/TSA.
-- CA responsibilities are limited to certificate issuing, OCSP/CRL, TSA timestamping, and signature verification metadata.
+- RA runs as a separate RA Server for CSR request and approval state.
+- CA/TSA responsibilities are limited to certificate issuing after RA approval, OCSP/CRL, TSA timestamping, and signature verification metadata.
 - The CA no longer re-encrypts signed artifacts with its master KEM for storage.
 - Signed PDFs are delivered by portal delivery storage after CA verification, so citizens can download a signed artifact without the CA acting as a decryptor.
 - `/decrypt-pdf` returns HTTP 410 and explains that document decryption must happen on an authorized user/officer device.
@@ -80,7 +80,7 @@ Branch and commit:
 - `fix: limit ca server to certificate tsa and revocation duties`
 
 Docs:
-- `docs/CA_RA_TSA_BOUNDARY.md`
+- `docs/CA_TSA_BOUNDARY.md`
 
 ## 6. Officer Device Authentication
 
@@ -106,7 +106,8 @@ For the current local defense demo:
 1. `thanhthuydepgai.42web.io` is mapped to `127.0.0.1` in the Windows hosts file.
 2. Apache terminates TLS 1.3 using the ZeroSSL ECDSA certificate for `thanhthuydepgai.42web.io`.
 3. Apache reverse-proxies to Django on `127.0.0.1:8000`.
-4. The CA/RA/TSA service runs on `127.0.0.1:5001`.
-5. The PQC Local Agent runs on `127.0.0.1:54321`.
+4. The CA/TSA service runs on `127.0.0.1:5001`.
+5. The RA Server runs on `127.0.0.1:5002`.
+6. The PQC Local Agent runs on `127.0.0.1:54321`.
 
 This is a local deployment pattern for demonstrating the real domain, certificate, SNI, TLS 1.3, PKI flow, metadata-only cloud database design, and device-bound officer signing without needing a public VM or production HSM.

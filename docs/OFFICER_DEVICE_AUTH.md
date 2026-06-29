@@ -13,7 +13,7 @@ Officer access is not tied to an office IP address. The system verifies the offi
 
 ## Why This Fixes the Review Concern
 
-Digital signing is supposed to work from an authorized device, not only from a government office LAN. The officer's private key remains on the local machine and never goes to Django, MongoDB, or the CA/RA/TSA service.
+Digital signing is supposed to work from an authorized device, not only from a government office LAN. The officer's private key remains on the local machine and never goes to Django, MongoDB, the RA Server, or the CA/TSA service.
 
 ## Demo Scope
 

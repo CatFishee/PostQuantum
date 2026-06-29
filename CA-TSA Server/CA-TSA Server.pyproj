@@ -10,8 +10,8 @@
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
     <OutputPath>.</OutputPath>
-    <Name>CA-RA-TSA Server</Name>
-    <RootNamespace>CA Server</RootNamespace>
+    <Name>CA-TSA Server</Name>
+    <RootNamespace>CA_TSA_Server</RootNamespace>
     <SuppressEnvironmentCreationPrompt>True</SuppressEnvironmentCreationPrompt>
     <InterpreterId>Global|VisualStudio|venv (Python 3.14 (64-bit))</InterpreterId>
   </PropertyGroup>
