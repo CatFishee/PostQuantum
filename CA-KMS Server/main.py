@@ -204,90 +204,101 @@ def get_master_public_key():
         "not_for_user_key_escrow": True,
     }
 
-@app.post("/register_officer")
-def register_officer(req: RegisterRequest):
+def _decrypt_ca_transport_request(req: RegisterRequest):
+    ca_kem_priv = bytes.fromhex(CA_HSM_STORE["ml_kem_priv"])
+    with oqs.KeyEncapsulation("ML-KEM-1024", secret_key=ca_kem_priv) as kem:
+        shared_secret = kem.decap_secret(bytes.fromhex(req.kem_ciphertext))
+
+    payload_bytes = aes_gcm_decrypt(
+        shared_secret,
+        bytes.fromhex(req.aes_iv),
+        bytes.fromhex(req.encrypted_payload),
+        bytes.fromhex(req.aes_tag),
+    )
+    return json.loads(payload_bytes.decode("utf-8")), shared_secret
+
+def _encrypt_ca_transport_response(shared_secret, payload: dict):
+    resp_payload = json.dumps(payload).encode("utf-8")
+    iv, cipher, tag = aes_gcm_encrypt(shared_secret, resp_payload)
+    return {
+        "aes_iv": iv.hex(),
+        "aes_tag": tag.hex(),
+        "encrypted_payload": cipher.hex(),
+    }
+
+def _issue_officer_certificate_from_payload(payload: dict):
+    officer_id = payload.get("officer_id")
+    username = payload.get("username")
+    client_dsa_pk_hex = payload.get("ml_dsa_pk_hex")
+    client_kem_pk_hex = payload.get("ml_kem_pk_hex")
+    if not officer_id or not username or not client_dsa_pk_hex or not client_kem_pk_hex:
+        raise ValueError("Missing officer certificate payload fields")
+
+    cert_serial = str(uuid.uuid4())
+    valid_from = datetime.datetime.now(datetime.timezone.utc)
+    valid_to = valid_from + datetime.timedelta(days=365)
+    subject_dn = payload.get("subject_dn") or f"CN={username}, OU=Officers, O=PQC-System"
+
+    cert_data = {
+        "serial_number": cert_serial,
+        "subject_dn": subject_dn,
+        "issuer_pqc_ca": "Issuing PQC CA v2 (ML-DSA-65)",
+        "public_keys": {
+            "ml_kem_pk": client_kem_pk_hex,
+            "ml_dsa_pk": client_dsa_pk_hex,
+        },
+        "not_before": valid_from.isoformat().replace("+00:00", "Z"),
+        "not_after": valid_to.isoformat().replace("+00:00", "Z"),
+        "status": "valid",
+    }
+
+    cert_data_bytes = json.dumps(cert_data, sort_keys=True).encode("utf-8")
+    ca_dsa_priv = bytes.fromhex(CA_HSM_STORE["ca_dsa_priv"])
+
+    shake = hashlib.shake_256()
+    shake.update(cert_data_bytes)
+    cert_hash = shake.digest(32)
+
+    with oqs.Signature("ML-DSA-65", secret_key=ca_dsa_priv) as ca_signer:
+        ca_signature = ca_signer.sign(cert_hash)
+
+    cert_doc = {
+        "serial_number": cert_serial,
+        "subject_dn": subject_dn,
+        "certificate_body": cert_data,
+        "ca_signature_hex": ca_signature.hex(),
+        "not_before": valid_from.replace(tzinfo=None),
+        "not_after": valid_to.replace(tzinfo=None),
+        "status": "valid",
+    }
+    db.certificates.insert_one(cert_doc)
+
+    db.officer_keys.update_one(
+        {"officer_id": _to_object_id_local(officer_id)},
+        {"$set": {
+            "ml_kem_pk": bytes.fromhex(client_kem_pk_hex),
+            "ml_dsa_pk": bytes.fromhex(client_dsa_pk_hex),
+            "cert_serial": cert_serial,
+            "status": "active",
+        }},
+        upsert=True,
+    )
+    return {"status": "success", "cert_serial": cert_serial}
+
+@app.post("/issue-officer-certificate")
+def issue_officer_certificate(req: RegisterRequest):
     if db is None:
         raise HTTPException(status_code=500, detail="Database Offline")
     try:
-        ca_kem_priv = bytes.fromhex(CA_HSM_STORE["ml_kem_priv"])
-        with oqs.KeyEncapsulation("ML-KEM-1024", secret_key=ca_kem_priv) as kem:
-            shared_secret = kem.decap_secret(bytes.fromhex(req.kem_ciphertext))
-        
-        payload_bytes = aes_gcm_decrypt(
-            shared_secret, 
-            bytes.fromhex(req.aes_iv), 
-            bytes.fromhex(req.encrypted_payload), 
-            bytes.fromhex(req.aes_tag)
-        )
-        payload = json.loads(payload_bytes.decode('utf-8'))
-        officer_id = payload.get("officer_id")
-        username = payload.get("username")
-        
-        client_dsa_pk_hex = payload.get("ml_dsa_pk_hex")
-        client_kem_pk_hex = payload.get("ml_kem_pk_hex")
-
-        cert_serial = str(uuid.uuid4())
-        valid_from = datetime.datetime.now(datetime.timezone.utc)
-        valid_to = valid_from + datetime.timedelta(days=365)
-        
-        cert_data = {
-            "serial_number": cert_serial,
-            "subject_dn": f"CN={username}, OU=Officers, O=PQC-System",
-            "issuer_pqc_ca": "Issuing PQC CA v2 (ML-DSA-65)",
-            "public_keys": {
-                "ml_kem_pk": client_kem_pk_hex,
-                "ml_dsa_pk": client_dsa_pk_hex
-            },
-            "not_before": valid_from.isoformat().replace("+00:00", "Z"),
-            "not_after": valid_to.isoformat().replace("+00:00", "Z"),
-            "status": "valid"
-        }
-        
-        cert_data_bytes = json.dumps(cert_data, sort_keys=True).encode("utf-8")
-        ca_dsa_priv = bytes.fromhex(CA_HSM_STORE["ca_dsa_priv"])
-        
-        shake = hashlib.shake_256()
-        shake.update(cert_data_bytes)
-        cert_hash = shake.digest(32)
-        
-        with oqs.Signature("ML-DSA-65", secret_key=ca_dsa_priv) as ca_signer:
-            ca_signature = ca_signer.sign(cert_hash)
-
-        valid_from_naive = valid_from.replace(tzinfo=None)
-        valid_to_naive = valid_to.replace(tzinfo=None)
-
-        cert_doc = {
-            "serial_number": cert_serial,
-            "certificate_body": cert_data,
-            "ca_signature_hex": ca_signature.hex(),
-            "not_before": valid_from_naive,
-            "not_after": valid_to_naive,
-            "status": "valid"
-        }
-        db.certificates.insert_one(cert_doc)
-
-        from bson import ObjectId
-        db.officer_keys.update_one(
-            {"officer_id": ObjectId(officer_id)},
-            {"$set": {
-                "ml_kem_pk": bytes.fromhex(client_kem_pk_hex),
-                "ml_dsa_pk": bytes.fromhex(client_dsa_pk_hex),
-                "cert_serial": cert_serial,
-                "status": "active"
-            }},
-            upsert=True
-        )
-
-        resp_payload = json.dumps({"status": "success", "cert_serial": cert_serial}).encode('utf-8')
-        iv, cipher, tag = aes_gcm_encrypt(shared_secret, resp_payload)
-
-        return {
-            "aes_iv": iv.hex(),
-            "aes_tag": tag.hex(),
-            "encrypted_payload": cipher.hex()
-        }
+        payload, shared_secret = _decrypt_ca_transport_request(req)
+        issue_result = _issue_officer_certificate_from_payload(payload)
+        return _encrypt_ca_transport_response(shared_secret, issue_result)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Registration and certification issuing failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Officer certificate issuing failed: {str(e)}")
+
+@app.post("/register_officer")
+def register_officer(req: RegisterRequest):
+    return issue_officer_certificate(req)
 
 # --- 100% IN-MEMORY HỒ SƠ UPLOAD CHƯA KÝ ---
 @app.post("/encrypt-pdf")
