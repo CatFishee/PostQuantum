@@ -9,9 +9,10 @@ This demo uses one Django web portal that is reachable by citizens over HTTPS:
 
 The portal is not described as an intranet-only website. Citizens can submit documents through the HTTPS domain. Internal-only components are the service-to-service links behind the portal:
 
-- Django to CA/RA/TSA service through `CA_SERVICE_URL`.
+- Django to RA Server through `RA_SERVICE_URL` for officer CSR registration and admin review.
+- Django to CA/TSA service through `CA_SERVICE_URL` for encryption, TSA, OCSP/CRL, and signed-PDF verification metadata.
 - Browser to PQC Local Agent through `LOCAL_AGENT_URL`.
-- CA/RA/TSA service to MongoDB Atlas for metadata and audit records.
+- RA Server and CA/TSA service to MongoDB Atlas for metadata and audit records.
 
 ## Reviewer Concern
 

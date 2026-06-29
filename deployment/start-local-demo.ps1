@@ -98,10 +98,11 @@ $env:DJANGO_SESSION_COOKIE_SECURE = "false"
 $env:DJANGO_CSRF_COOKIE_SECURE = "false"
 $env:DJANGO_SECURE_SSL_REDIRECT = "false"
 $env:CA_SERVICE_URL = "http://127.0.0.1:5001"
+$env:RA_SERVICE_URL = "http://127.0.0.1:5002"
 $env:LOCAL_AGENT_URL = "http://127.0.0.1:54321"
 $env:AGENT_ALLOWED_ORIGIN_REGEX = "https?://(localhost|127\.0\.0\.1|$($Domain.Replace('.', '\.')))(:\d+)?"
 $env:OFFICER_DEVICE_PROOF_TTL_SECONDS = "900"
-$env:PRIVATE_BLOB_STORAGE_ROOT = Join-Path $RepoRoot "CA-KMS Server\private_storage"
+$env:PRIVATE_BLOB_STORAGE_ROOT = Join-Path $RepoRoot "CA-TSA Server\private_storage"
 
 Write-Host "== Starting PostQuantum local demo =="
 Write-Host "Domain: https://$Domain"
@@ -120,11 +121,20 @@ try {
 
 if (-not (Test-ListenPort 5001)) {
     Start-HiddenPowerShell `
-        -Name "ca-ra-tsa-5001" `
-        -WorkingDirectory (Join-Path $RepoRoot "CA-KMS Server") `
+        -Name "ca-tsa-5001" `
+        -WorkingDirectory (Join-Path $RepoRoot "CA-TSA Server") `
         -Command "`$env:PRIVATE_BLOB_STORAGE_ROOT='$($env:PRIVATE_BLOB_STORAGE_ROOT)'; & '$Python' -u 'main.py'"
 } else {
-    Write-Host "[SKIP] CA/RA/TSA already listens on 5001"
+    Write-Host "[SKIP] CA/TSA already listens on 5001"
+}
+
+if (-not (Test-ListenPort 5002)) {
+    Start-HiddenPowerShell `
+        -Name "ra-5002" `
+        -WorkingDirectory (Join-Path $RepoRoot "RA Server") `
+        -Command "`$env:CA_SERVICE_URL='http://127.0.0.1:5001'; & '$Python' -u 'main.py'"
+} else {
+    Write-Host "[SKIP] RA Server already listens on 5002"
 }
 
 if (-not (Test-ListenPort 54321)) {
@@ -140,7 +150,7 @@ if (-not (Test-ListenPort 8000)) {
     Start-HiddenPowerShell `
         -Name "django-portal-8000" `
         -WorkingDirectory (Join-Path $RepoRoot "PublicAdminWeb") `
-        -Command "`$env:PUBLIC_PORTAL_DOMAIN='$Domain'; `$env:PUBLIC_PORTAL_ORIGIN='https://$Domain'; `$env:DJANGO_ALLOWED_HOSTS='$($env:DJANGO_ALLOWED_HOSTS)'; `$env:DJANGO_CSRF_TRUSTED_ORIGINS='$($env:DJANGO_CSRF_TRUSTED_ORIGINS)'; `$env:DJANGO_DEBUG='true'; `$env:DJANGO_SESSION_COOKIE_SECURE='false'; `$env:DJANGO_CSRF_COOKIE_SECURE='false'; `$env:DJANGO_SECURE_SSL_REDIRECT='false'; `$env:CA_SERVICE_URL='http://127.0.0.1:5001'; `$env:LOCAL_AGENT_URL='http://127.0.0.1:54321'; & '$Python' -u 'manage.py' runserver 127.0.0.1:8000 --noreload"
+        -Command "`$env:PUBLIC_PORTAL_DOMAIN='$Domain'; `$env:PUBLIC_PORTAL_ORIGIN='https://$Domain'; `$env:DJANGO_ALLOWED_HOSTS='$($env:DJANGO_ALLOWED_HOSTS)'; `$env:DJANGO_CSRF_TRUSTED_ORIGINS='$($env:DJANGO_CSRF_TRUSTED_ORIGINS)'; `$env:DJANGO_DEBUG='true'; `$env:DJANGO_SESSION_COOKIE_SECURE='false'; `$env:DJANGO_CSRF_COOKIE_SECURE='false'; `$env:DJANGO_SECURE_SSL_REDIRECT='false'; `$env:CA_SERVICE_URL='http://127.0.0.1:5001'; `$env:RA_SERVICE_URL='http://127.0.0.1:5002'; `$env:LOCAL_AGENT_URL='http://127.0.0.1:54321'; & '$Python' -u 'manage.py' runserver 127.0.0.1:8000 --noreload"
 } else {
     Write-Host "[SKIP] Django portal already listens on 8000"
 }
@@ -168,7 +178,7 @@ Start-Sleep -Seconds 4
 
 Write-Host ""
 Write-Host "== Port check =="
-foreach ($port in 5001, 54321, 8000, 443) {
+foreach ($port in 5001, 5002, 54321, 8000, 443) {
     if (Test-ListenPort $port) {
         Write-Host "[OK] Port $port is listening"
     } else {

@@ -17,11 +17,7 @@ from django.views.decorators.csrf import csrf_exempt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
-from .crypto_utils import (
-    aes_gcm_decrypt,
-    aes_gcm_encrypt,
-    hash_pdf_pqc
-)
+from .crypto_utils import hash_pdf_pqc
 from .db_connection import get_db
 
 try:
@@ -38,6 +34,10 @@ LOCAL_MASTER_KEY = bytes.fromhex(LOCAL_DEK_HEX)
 # --- HELPER FUNCTIONS ---
 def _ca_url(path):
     return f"{settings.CA_SERVICE_URL}/{path.lstrip('/')}"
+
+
+def _ra_url(path):
+    return f"{settings.RA_SERVICE_URL}/{path.lstrip('/')}"
 
 
 def _local_agent_url():
@@ -204,11 +204,7 @@ def _store_pending_certificate_request(
     ml_dsa_pk_hex,
     ml_kem_pk_hex,
 ):
-    if db is None:
-        raise RuntimeError("Database is not connected")
-    csr_doc = {
-        "request_type": "officer_certificate",
-        "status": "pending",
+    payload = {
         "officer_id": str(officer_id),
         "username": username,
         "full_name": full_name,
@@ -217,127 +213,28 @@ def _store_pending_certificate_request(
             "ml_dsa_pk_hex": ml_dsa_pk_hex,
             "ml_kem_pk_hex": ml_kem_pk_hex,
         },
-        "created_at": datetime.utcnow(),
     }
-    return db.certificate_requests.insert_one(csr_doc).inserted_id
-
-def _find_certificate_request(request_id):
-    if db is None or not request_id:
-        return None
-    for query in _object_id_queries(request_id):
-        found = db.certificate_requests.find_one(query)
-        if found:
-            return found
-    return None
-
-def _encrypt_payload_for_ca(payload_dict):
-    r_pub = requests.get(_ca_url("master-public-key"), timeout=10)
-    r_pub.raise_for_status()
-    master_pub = bytes.fromhex(r_pub.json()["public_key"])
-
-    import oqs
-    with oqs.KeyEncapsulation("ML-KEM-1024") as kem:
-        kem_cipher, shared_secret = kem.encap_secret(master_pub)
-
-    payload_bytes = json.dumps(payload_dict).encode("utf-8")
-    iv, cipher, tag = aes_gcm_encrypt(shared_secret, payload_bytes)
-    return {
-        "kem_ciphertext": kem_cipher.hex(),
-        "aes_iv": iv.hex(),
-        "aes_tag": tag.hex(),
-        "encrypted_payload": cipher.hex(),
-    }, shared_secret
-
-def _decrypt_ca_response(response_payload, shared_secret):
-    if not response_payload.get("encrypted_payload"):
-        return response_payload
-    payload_bytes = aes_gcm_decrypt(
-        shared_secret,
-        bytes.fromhex(response_payload["aes_iv"]),
-        bytes.fromhex(response_payload["encrypted_payload"]),
-        bytes.fromhex(response_payload["aes_tag"]),
-    )
-    return json.loads(payload_bytes.decode("utf-8"))
-
-def _issue_officer_certificate_via_ca(csr_doc):
-    public_keys = csr_doc.get("public_keys") or {}
-    payload_dict = {
-        "officer_id": str(csr_doc.get("officer_id")),
-        "username": csr_doc.get("username"),
-        "subject_dn": csr_doc.get("subject_dn") or _certificate_subject_dn(csr_doc.get("username")),
-        "ml_dsa_pk_hex": public_keys.get("ml_dsa_pk_hex"),
-        "ml_kem_pk_hex": public_keys.get("ml_kem_pk_hex"),
-    }
-    ca_req_data, shared_secret = _encrypt_payload_for_ca(payload_dict)
-    response = requests.post(_ca_url("issue-officer-certificate"), json=ca_req_data, timeout=20)
+    response = requests.post(_ra_url("certificate-requests"), json=payload, timeout=20)
     response.raise_for_status()
-    return _decrypt_ca_response(response.json(), shared_secret)
+    return response.json()["request_id"]
 
 def _approve_certificate_request(request_id, reviewer_id):
-    if db is None:
-        raise RuntimeError("Database is not connected")
-    csr_doc = _find_certificate_request(request_id)
-    if not csr_doc:
-        raise ValueError("Certificate request not found")
-    if csr_doc.get("status") != "pending":
-        raise ValueError("Certificate request is not pending")
-
-    ca_result = _issue_officer_certificate_via_ca(csr_doc)
-    cert_serial = ca_result.get("cert_serial")
-    if not cert_serial:
-        raise ValueError("CA did not return a certificate serial")
-
-    reviewed_at = datetime.utcnow()
-    db.certificate_requests.update_one(
-        {"_id": csr_doc["_id"]},
-        {"$set": {
-            "status": "approved",
-            "reviewed_at": reviewed_at,
-            "reviewed_by": str(reviewer_id),
-            "cert_serial": cert_serial,
-            "ca_status": ca_result.get("status", "success"),
-        }},
+    response = requests.post(
+        _ra_url(f"certificate-requests/{request_id}/approve"),
+        json={"reviewer_id": str(reviewer_id)},
+        timeout=30,
     )
-    db.users.update_one(
-        {"_id": _to_mongo_id(csr_doc.get("officer_id"))},
-        {"$set": {
-            "pqc_status": "active",
-            "cert_serial": cert_serial,
-            "certificate_approved_at": reviewed_at,
-            "certificate_approved_by": str(reviewer_id),
-        }},
-    )
-    return {"status": "approved", "cert_serial": cert_serial}
+    response.raise_for_status()
+    return response.json()
 
 def _reject_certificate_request(request_id, reviewer_id, review_note=""):
-    if db is None:
-        raise RuntimeError("Database is not connected")
-    csr_doc = _find_certificate_request(request_id)
-    if not csr_doc:
-        raise ValueError("Certificate request not found")
-    if csr_doc.get("status") != "pending":
-        raise ValueError("Certificate request is not pending")
-
-    reviewed_at = datetime.utcnow()
-    db.certificate_requests.update_one(
-        {"_id": csr_doc["_id"]},
-        {"$set": {
-            "status": "rejected",
-            "reviewed_at": reviewed_at,
-            "reviewed_by": str(reviewer_id),
-            "review_note": review_note,
-        }},
+    response = requests.post(
+        _ra_url(f"certificate-requests/{request_id}/reject"),
+        json={"reviewer_id": str(reviewer_id), "review_note": review_note},
+        timeout=20,
     )
-    db.users.update_one(
-        {"_id": _to_mongo_id(csr_doc.get("officer_id"))},
-        {"$set": {
-            "pqc_status": "inactive",
-            "certificate_rejected_at": reviewed_at,
-            "certificate_rejected_by": str(reviewer_id),
-            "certificate_rejection_note": review_note,
-        }},
-    )
-    return {"status": "rejected"}
+    response.raise_for_status()
+    return response.json()
 
 def _certificate_request_rows(raw_requests):
     rows = []
@@ -498,20 +395,23 @@ def ra_requests(request):
         return redirect("login")
     if not _is_admin_role(request.session.get("role")):
         return HttpResponseForbidden("Forbidden: admin RA role required.")
-    if db is None:
-        messages.error(request, "Database chưa kết nối, không thể tải yêu cầu CSR.")
+    try:
+        response = requests.get(_ra_url("certificate-requests"), params={"status": "pending"}, timeout=15)
+        response.raise_for_status()
+        requests_list = response.json().get("requests", [])
+    except Exception as e:
+        messages.error(request, f"Khong the tai yeu cau CSR tu RA Server: {e}")
         requests_list = []
-    else:
-        requests_list = list(db.certificate_requests.find({"status": "pending"}))
     return render(
         request,
         "app/ra_requests.html",
         {
             "requests": _certificate_request_rows(requests_list),
-            "title": "RA duyệt CSR",
+            "title": "RA duyet CSR",
             "year": datetime.now().year,
         },
     )
+
 
 def ra_approve_request(request, request_id):
     if "user" not in request.session:
@@ -522,21 +422,11 @@ def ra_approve_request(request, request_id):
         return redirect("ra_requests")
     try:
         result = _approve_certificate_request(request_id, request.session.get("user_id"))
-        messages.success(request, f"Đã duyệt CSR và CA đã cấp chứng thư {result['cert_serial']}.")
+        messages.success(request, f"Da duyet CSR; CA da cap chung thu {result['cert_serial']}.")
     except Exception as e:
-        if db is not None:
-            csr_doc = _find_certificate_request(request_id)
-            if csr_doc:
-                db.certificate_requests.update_one(
-                    {"_id": csr_doc["_id"]},
-                    {"$set": {
-                        "status": "pending",
-                        "ca_error": str(e),
-                        "last_ca_error_at": datetime.utcnow(),
-                    }},
-                )
-        messages.error(request, f"Duyệt CSR thất bại: {e}")
+        messages.error(request, f"Duyet CSR that bai: {e}")
     return redirect("ra_requests")
+
 
 def ra_reject_request(request, request_id):
     if "user" not in request.session:
@@ -789,7 +679,7 @@ def download_signed_pdf(request, doc_id):
     if not ciphertext_b64:
         raise Http404("Tài liệu chưa được ký số hoàn chỉnh.")
 
-    messages.error(request, "Artifact kiểu cũ đang yêu cầu CA giải mã nên bị chặn. CA/RA/TSA không thực hiện vai trò KMS hoặc giải mã tài liệu.")
+    messages.error(request, "Artifact kiểu cũ đang yêu cầu CA giải mã nên bị chặn. CA/TSA không quản lý khóa tài liệu hoặc giải mã tài liệu.")
     return redirect("dashboard")
 
 def verify_document_view(request):

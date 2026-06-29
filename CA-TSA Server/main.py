@@ -25,12 +25,12 @@ from crypto_utils import aes_gcm_encrypt, aes_gcm_decrypt
 async def lifespan(app: FastAPI):
     """Quản lý vòng đời hiện đại: In Banner CA Server ra Terminal."""
     print("\n" + "="*60)
-    print(" >> [SYSTEM STATE: PQC CA/RA/TSA SERVER IS RUNNING]")
+    print(" >> [SYSTEM STATE: PQC CA/TSA SERVER IS RUNNING]")
     print(" >> Port: 5001 | Endpoint: http://127.0.0.1:5001")
     print("="*60 + "\n")
     yield
 
-app = FastAPI(title="PQC CA/RA/TSA Security Server", lifespan=lifespan)
+app = FastAPI(title="PQC CA/TSA Security Server", lifespan=lifespan)
 db = get_db()
 PRIVATE_BLOB_STORAGE_ROOT = os.getenv(
     "PRIVATE_BLOB_STORAGE_ROOT",
@@ -524,7 +524,7 @@ def decrypt_pdf(
 ):
     raise HTTPException(
         status_code=410,
-        detail="CA/RA/TSA service does not decrypt documents or act as a KMS. Decryption must happen on an authorized user/officer device."
+        detail="CA/TSA service does not decrypt documents or manage user document keys. Decryption must happen on an authorized user/officer device."
     )
 
 @app.post("/tsa/timestamp")
