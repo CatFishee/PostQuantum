@@ -6,6 +6,9 @@
         </a>
         <ul class="dropdown-menu dropdown-menu-end shadow" aria-labelledby="userDropdown">
             <li><a class="dropdown-item" href="{% url 'dashboard' %}"><i class="fas fa-chart-line text-primary"></i> Bảng điều khiển</a></li>
+            {% if request.session.role|lower == "admin" %}
+            <li><a class="dropdown-item" href="{% url 'ra_requests' %}"><i class="fas fa-certificate text-success"></i> Duyệt CSR RA</a></li>
+            {% endif %}
             <li><hr class="dropdown-divider"></li>
             <li>
                 <form id="logoutForm" action="{% url 'logout' %}" method="post">
