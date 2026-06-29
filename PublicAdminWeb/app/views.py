@@ -47,6 +47,12 @@ def _local_agent_url():
 def _is_officer_role(role):
     return str(role or "").lower() == "officer"
 
+def _is_admin_role(role):
+    return str(role or "").lower() == "admin"
+
+def _is_citizen_role(role):
+    return str(role or "").lower() == "citizen"
+
 def _to_mongo_id(value):
     if ObjectId is None or not value:
         return value
@@ -188,6 +194,172 @@ def ca_encrypt_pdf_in_memory(pdf_base64, officer_id, citizen_id, original_filena
          raise Exception(f"Lỗi hệ thống CA Server: {response.text}")
     return response.json()
 
+def _certificate_subject_dn(username):
+    return f"CN={username}, OU=Officers, O=PQC-System"
+
+def _store_pending_certificate_request(
+    officer_id,
+    username,
+    full_name,
+    ml_dsa_pk_hex,
+    ml_kem_pk_hex,
+):
+    if db is None:
+        raise RuntimeError("Database is not connected")
+    csr_doc = {
+        "request_type": "officer_certificate",
+        "status": "pending",
+        "officer_id": str(officer_id),
+        "username": username,
+        "full_name": full_name,
+        "subject_dn": _certificate_subject_dn(username),
+        "public_keys": {
+            "ml_dsa_pk_hex": ml_dsa_pk_hex,
+            "ml_kem_pk_hex": ml_kem_pk_hex,
+        },
+        "created_at": datetime.utcnow(),
+    }
+    return db.certificate_requests.insert_one(csr_doc).inserted_id
+
+def _find_certificate_request(request_id):
+    if db is None or not request_id:
+        return None
+    for query in _object_id_queries(request_id):
+        found = db.certificate_requests.find_one(query)
+        if found:
+            return found
+    return None
+
+def _encrypt_payload_for_ca(payload_dict):
+    r_pub = requests.get(_ca_url("master-public-key"), timeout=10)
+    r_pub.raise_for_status()
+    master_pub = bytes.fromhex(r_pub.json()["public_key"])
+
+    import oqs
+    with oqs.KeyEncapsulation("ML-KEM-1024") as kem:
+        kem_cipher, shared_secret = kem.encap_secret(master_pub)
+
+    payload_bytes = json.dumps(payload_dict).encode("utf-8")
+    iv, cipher, tag = aes_gcm_encrypt(shared_secret, payload_bytes)
+    return {
+        "kem_ciphertext": kem_cipher.hex(),
+        "aes_iv": iv.hex(),
+        "aes_tag": tag.hex(),
+        "encrypted_payload": cipher.hex(),
+    }, shared_secret
+
+def _decrypt_ca_response(response_payload, shared_secret):
+    if not response_payload.get("encrypted_payload"):
+        return response_payload
+    payload_bytes = aes_gcm_decrypt(
+        shared_secret,
+        bytes.fromhex(response_payload["aes_iv"]),
+        bytes.fromhex(response_payload["encrypted_payload"]),
+        bytes.fromhex(response_payload["aes_tag"]),
+    )
+    return json.loads(payload_bytes.decode("utf-8"))
+
+def _issue_officer_certificate_via_ca(csr_doc):
+    public_keys = csr_doc.get("public_keys") or {}
+    payload_dict = {
+        "officer_id": str(csr_doc.get("officer_id")),
+        "username": csr_doc.get("username"),
+        "subject_dn": csr_doc.get("subject_dn") or _certificate_subject_dn(csr_doc.get("username")),
+        "ml_dsa_pk_hex": public_keys.get("ml_dsa_pk_hex"),
+        "ml_kem_pk_hex": public_keys.get("ml_kem_pk_hex"),
+    }
+    ca_req_data, shared_secret = _encrypt_payload_for_ca(payload_dict)
+    response = requests.post(_ca_url("issue-officer-certificate"), json=ca_req_data, timeout=20)
+    response.raise_for_status()
+    return _decrypt_ca_response(response.json(), shared_secret)
+
+def _approve_certificate_request(request_id, reviewer_id):
+    if db is None:
+        raise RuntimeError("Database is not connected")
+    csr_doc = _find_certificate_request(request_id)
+    if not csr_doc:
+        raise ValueError("Certificate request not found")
+    if csr_doc.get("status") != "pending":
+        raise ValueError("Certificate request is not pending")
+
+    ca_result = _issue_officer_certificate_via_ca(csr_doc)
+    cert_serial = ca_result.get("cert_serial")
+    if not cert_serial:
+        raise ValueError("CA did not return a certificate serial")
+
+    reviewed_at = datetime.utcnow()
+    db.certificate_requests.update_one(
+        {"_id": csr_doc["_id"]},
+        {"$set": {
+            "status": "approved",
+            "reviewed_at": reviewed_at,
+            "reviewed_by": str(reviewer_id),
+            "cert_serial": cert_serial,
+            "ca_status": ca_result.get("status", "success"),
+        }},
+    )
+    db.users.update_one(
+        {"_id": _to_mongo_id(csr_doc.get("officer_id"))},
+        {"$set": {
+            "pqc_status": "active",
+            "cert_serial": cert_serial,
+            "certificate_approved_at": reviewed_at,
+            "certificate_approved_by": str(reviewer_id),
+        }},
+    )
+    return {"status": "approved", "cert_serial": cert_serial}
+
+def _reject_certificate_request(request_id, reviewer_id, review_note=""):
+    if db is None:
+        raise RuntimeError("Database is not connected")
+    csr_doc = _find_certificate_request(request_id)
+    if not csr_doc:
+        raise ValueError("Certificate request not found")
+    if csr_doc.get("status") != "pending":
+        raise ValueError("Certificate request is not pending")
+
+    reviewed_at = datetime.utcnow()
+    db.certificate_requests.update_one(
+        {"_id": csr_doc["_id"]},
+        {"$set": {
+            "status": "rejected",
+            "reviewed_at": reviewed_at,
+            "reviewed_by": str(reviewer_id),
+            "review_note": review_note,
+        }},
+    )
+    db.users.update_one(
+        {"_id": _to_mongo_id(csr_doc.get("officer_id"))},
+        {"$set": {
+            "pqc_status": "inactive",
+            "certificate_rejected_at": reviewed_at,
+            "certificate_rejected_by": str(reviewer_id),
+            "certificate_rejection_note": review_note,
+        }},
+    )
+    return {"status": "rejected"}
+
+def _certificate_request_rows(raw_requests):
+    rows = []
+    for csr_doc in raw_requests:
+        public_keys = csr_doc.get("public_keys") or {}
+        rows.append({
+            "id": str(csr_doc.get("_id", "")),
+            "status": csr_doc.get("status", ""),
+            "username": csr_doc.get("username", ""),
+            "full_name": csr_doc.get("full_name", ""),
+            "subject_dn": csr_doc.get("subject_dn", ""),
+            "created_at": csr_doc.get("created_at", ""),
+            "reviewed_at": csr_doc.get("reviewed_at", ""),
+            "reviewed_by": csr_doc.get("reviewed_by", ""),
+            "review_note": csr_doc.get("review_note", ""),
+            "cert_serial": csr_doc.get("cert_serial", ""),
+            "ml_dsa_pk_preview": (public_keys.get("ml_dsa_pk_hex") or "")[:32],
+            "ml_kem_pk_preview": (public_keys.get("ml_kem_pk_hex") or "")[:32],
+        })
+    rows.sort(key=lambda row: str(row.get("created_at", "")), reverse=True)
+    return rows
+
 # --- DJANGO VIEWS ---
 
 def home(request):
@@ -234,7 +406,7 @@ def register(request):
             "role": role,
             "password_hash": pass_hash,
             "full_name": full_name,
-            "pqc_status": "active" if not _is_officer_role(role) else "inactive",
+            "pqc_status": "active" if not _is_officer_role(role) else "pending_approval",
             "created_at": datetime.utcnow(),
         }
         result = db.users.insert_one(user_data)
@@ -242,38 +414,18 @@ def register(request):
 
         if _is_officer_role(role):
             try:
-                r_pub = requests.get(_ca_url("master-public-key"), timeout=10)
-                r_pub.raise_for_status()
-                master_pub = bytes.fromhex(r_pub.json()["public_key"])
-                
-                import oqs
-                with oqs.KeyEncapsulation("ML-KEM-1024") as kem:
-                    kem_cipher, shared_secret = kem.encap_secret(master_pub)
-                    
-                payload_dict = {
-                    "officer_id": user_id, 
-                    "username": username,
-                    "ml_dsa_pk_hex": dsa_pk_hex,
-                    "ml_kem_pk_hex": kem_pk_hex
-                }
-                payload_bytes = json.dumps(payload_dict).encode('utf-8')
-                iv, cipher, tag = aes_gcm_encrypt(shared_secret, payload_bytes)
-                
-                ca_req_data = {
-                    "kem_ciphertext": kem_cipher.hex(),
-                    "aes_iv": iv.hex(),
-                    "aes_tag": tag.hex(),
-                    "encrypted_payload": cipher.hex()
-                }
-                response = requests.post(_ca_url("register_officer"), json=ca_req_data, timeout=15)
-                response.raise_for_status()
-                
-                db.users.update_one({"_id": result.inserted_id}, {"$set": {"pqc_status": "active"}})
-                messages.success(request, "Đăng ký thành công! Chứng thư số PQC đã được cấp phát an toàn.")
+                _store_pending_certificate_request(
+                    officer_id=user_id,
+                    username=username,
+                    full_name=full_name,
+                    ml_dsa_pk_hex=dsa_pk_hex,
+                    ml_kem_pk_hex=kem_pk_hex,
+                )
+                messages.success(request, "Đăng ký cán bộ thành công! CSR đã được gửi tới RA và đang chờ admin duyệt cấp chứng thư.")
                 return redirect("login")
             except Exception as e:
                 db.users.delete_one({"_id": result.inserted_id})
-                messages.error(request, f"Không thể kết nối hoặc chứng thực qua CA Server: {e}")
+                messages.error(request, f"Không thể lưu yêu cầu CSR trên RA: {e}")
                 return redirect("register")
         messages.success(request, "Đăng ký thành công!")
         return redirect("login")
@@ -292,8 +444,8 @@ def login(request):
                 ph.verify(user["password_hash"], password_attempt)
                 if ph.check_needs_rehash(user["password_hash"]):
                     db.users.update_one({"_id": user["_id"]}, {"$set": {"password_hash": ph.hash(password_attempt)}})
-                if user.get("pqc_status") == "inactive":
-                    messages.error(request, "Tài khoản của bạn bị lỗi hoặc chưa có khóa PQC hợp lệ.")
+                if _is_officer_role(user.get("role")) and user.get("pqc_status") != "active":
+                    messages.error(request, "Tài khoản cán bộ đang chờ admin RA duyệt CSR và cấp chứng thư PQC.")
                     return redirect("login")
                 request.session["user_id"] = str(user["_id"])
                 request.session["user"] = user["username"]
@@ -310,6 +462,8 @@ def dashboard(request):
     docs = []
     if db is None:
         messages.warning(request, "Database chưa kết nối nên chưa tải được danh sách hồ sơ.")
+    elif _is_admin_role(request.session.get("role")):
+        return redirect("ra_requests")
     elif _is_officer_role(request.session.get("role")):
         officer_id = request.session.get("user_id")
         docs = list(db.applications.find({
@@ -338,6 +492,66 @@ def dashboard(request):
             "year": datetime.now().year
         },
     )
+
+def ra_requests(request):
+    if "user" not in request.session:
+        return redirect("login")
+    if not _is_admin_role(request.session.get("role")):
+        return HttpResponseForbidden("Forbidden: admin RA role required.")
+    if db is None:
+        messages.error(request, "Database chưa kết nối, không thể tải yêu cầu CSR.")
+        requests_list = []
+    else:
+        requests_list = list(db.certificate_requests.find({"status": "pending"}))
+    return render(
+        request,
+        "app/ra_requests.html",
+        {
+            "requests": _certificate_request_rows(requests_list),
+            "title": "RA duyệt CSR",
+            "year": datetime.now().year,
+        },
+    )
+
+def ra_approve_request(request, request_id):
+    if "user" not in request.session:
+        return redirect("login")
+    if not _is_admin_role(request.session.get("role")):
+        return HttpResponseForbidden("Forbidden: admin RA role required.")
+    if request.method != "POST":
+        return redirect("ra_requests")
+    try:
+        result = _approve_certificate_request(request_id, request.session.get("user_id"))
+        messages.success(request, f"Đã duyệt CSR và CA đã cấp chứng thư {result['cert_serial']}.")
+    except Exception as e:
+        if db is not None:
+            csr_doc = _find_certificate_request(request_id)
+            if csr_doc:
+                db.certificate_requests.update_one(
+                    {"_id": csr_doc["_id"]},
+                    {"$set": {
+                        "status": "pending",
+                        "ca_error": str(e),
+                        "last_ca_error_at": datetime.utcnow(),
+                    }},
+                )
+        messages.error(request, f"Duyệt CSR thất bại: {e}")
+    return redirect("ra_requests")
+
+def ra_reject_request(request, request_id):
+    if "user" not in request.session:
+        return redirect("login")
+    if not _is_admin_role(request.session.get("role")):
+        return HttpResponseForbidden("Forbidden: admin RA role required.")
+    if request.method != "POST":
+        return redirect("ra_requests")
+    review_note = request.POST.get("review_note", "")
+    try:
+        _reject_certificate_request(request_id, request.session.get("user_id"), review_note)
+        messages.success(request, "Đã từ chối CSR và giữ tài khoản cán bộ ở trạng thái inactive.")
+    except Exception as e:
+        messages.error(request, f"Từ chối CSR thất bại: {e}")
+    return redirect("ra_requests")
 
 @csrf_exempt
 @agent_proxy_allowed
@@ -675,8 +889,8 @@ def upload_pdf(request):
     if "user" not in request.session:
         messages.error(request, "Vui lòng đăng nhập trước khi upload hồ sơ.")
         return redirect("login")
-    if _is_officer_role(request.session.get("role")):
-        messages.error(request, "Luồng upload hồ sơ dành cho công dân/doanh nghiệp. Cán bộ xử lý hồ sơ trong dashboard nghiệp vụ.")
+    if not _is_citizen_role(request.session.get("role")):
+        messages.error(request, "Luồng upload hồ sơ dành cho công dân/doanh nghiệp. Cán bộ/admin xử lý nghiệp vụ trong dashboard riêng.")
         return redirect("dashboard")
         
     active_officers = []

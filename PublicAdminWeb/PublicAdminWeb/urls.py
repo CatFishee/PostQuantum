@@ -14,6 +14,9 @@ urlpatterns = [
     path("login/", views.login, name="login"),
     path("download-key/", views.download_key, name="download_key"),
     path("dashboard/", views.dashboard, name="dashboard"),
+    path("ra/requests/", views.ra_requests, name="ra_requests"),
+    path("ra/requests/<str:request_id>/approve/", views.ra_approve_request, name="ra_approve_request"),
+    path("ra/requests/<str:request_id>/reject/", views.ra_reject_request, name="ra_reject_request"),
     path("upload/", views.upload_pdf, name="upload_pdf"),
     
     path("decrypt/<str:doc_id>/", views.decrypt_application_view, name="decrypt_application"),
